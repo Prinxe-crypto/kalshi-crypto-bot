@@ -64,8 +64,7 @@ class KalshiDemoBot:
         return self.get("/trade-api/v2/portfolio/balance")
 
     def get_crypto_markets(self):
-        """Fetches open markets specifically from the Bitcoin crypto series on Shard 2."""
-        return self.get("/trade-api/v2/markets", params={"series_ticker": "KXBTCD", "status": "open", "limit": 10})
+        return self.get("/trade-api/v2/markets", params={"series_ticker": "KXBTCD", "status": "open", "limit": 5})
 
     def place_order_v2(self, ticker, count, price_dollar_str, exchange_index=2):
         path = "/trade-api/v2/portfolio/events/orders"
@@ -79,13 +78,18 @@ class KalshiDemoBot:
             "side": "bid",
             "count": str(count),
             "price": price_dollar_str,
-            "exchange_index": exchange_index,  # Shard 2 for Crypto
+            "exchange_index": exchange_index,
             "time_in_force": "good_till_canceled",
             "self_trade_prevention_type": "taker_at_cross"
         }
         
         print(f"Submitting Crypto Order: BUY {count}x {ticker} at ${price_dollar_str} on Shard {exchange_index}")
         return self.post(path, payload)
+
+    def get_portfolio_orders(self, status="resting"):
+        """Fetches portfolio orders filtered by status (e.g., 'resting', 'executed', 'canceled')."""
+        path = "/trade-api/v2/portfolio/orders"
+        return self.get(path, params={"status": status})
 
 if __name__ == "__main__":
     print("Initializing Kalshi Crypto Demo Bot...")
@@ -95,7 +99,7 @@ if __name__ == "__main__":
     balance_response = bot.get_balance()
     print(f"Shard 2 Balance: ${balance_response.get('balance_dollars', '0.00')}")
     
-    # 2. Fetch Crypto Markets on Shard 2
+    # 2. Fetch Crypto Markets and Place Order
     markets_response = bot.get_crypto_markets()
     markets = markets_response.get("markets", [])
     
@@ -104,28 +108,15 @@ if __name__ == "__main__":
         target_ticker = target_market.get("ticker")
         print(f"Found live Crypto market ticker: {target_ticker}")
         
-        # 3. Place order on Shard 2
         order_response = bot.place_order_v2(
             ticker=target_ticker,
             count=1,
             price_dollar_str="0.50",
             exchange_index=2
         )
-        print("Order API Success Response:", json.dumps(order_response, indent=2))
-    else:
-        print("No active KXBTCD crypto markets open in the sandbox right now. Falling back to general open markets...")
-        # Fallback to general open markets if crypto series is resting between intervals
-        fallback_res = bot.get("/trade-api/v2/markets", params={"status": "open", "limit": 5})
-        for m in fallback_res.get("markets", []):
-            if m.get("exchange_index") == 2:
-                print(f"Found Shard 2 fallback ticker: {m.get('ticker')}")
-                order_response = bot.place_order_v2(
-                    ticker=m.get('ticker'),
-                    count=1,
-                    price_dollar_str="0.50",
-                    exchange_index=2
-                )
-                print("Fallback Order API Response:", json.dumps(order_response, indent=2))
-                break
-        else:
-            print("All current sandbox liquidity is resting on other shards. Your bot is fully coded and ready for when live crypto intervals populate!")
+        print("Order API Response:", json.dumps(order_response, indent=2))
+    
+    # 3. Check Active Portfolio Orders Status
+    print("\nChecking resting portfolio orders...")
+    orders_response = bot.get_portfolio_orders(status="resting")
+    print("Resting Orders Response:", json.dumps(orders_response, indent=2))
