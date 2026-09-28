@@ -54,22 +54,60 @@ class KalshiDemoBot:
         response = requests.get(url, headers=headers, params=params)
         return response.json()
 
+    def post(self, path, payload):
+        url = self.host + path
+        headers = self._get_signed_headers("POST", path)
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
+        return response.json()
+
     def get_balance(self):
         return self.get("/trade-api/v2/portfolio/balance")
 
     def get_markets(self):
-        return self.get("/trade-api/v2/markets", params={"status": "open", "limit": 5})
+        return self.get("/trade-api/v2/markets", params={"status": "open", "limit": 1})
+
+    def place_order(self, ticker, count, price_cents, action="buy", side="yes"):
+        """Places a limit order on the demo exchange."""
+        path = "/trade-api/v2/portfolio/orders"
+        client_order_id = f"demo-bot-{int(time.time() * 1000)}"
+        
+        payload = {
+            "ticker": ticker,
+            "client_order_id": client_order_id,
+            "type": "limit",
+            "action": action,
+            "side": side,
+            "count": count,
+            "yes_price": price_cents
+        }
+        
+        print(f"Submitting order: {action.upper()} {count}x {ticker} at {price_cents}¢ ({side.upper()})")
+        return self.post(path, payload)
 
 if __name__ == "__main__":
     print("Initializing Kalshi Demo Bot...")
     bot = KalshiDemoBot(HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     
+    # 1. Check Balance
     balance_response = bot.get_balance()
     print(f"Demo Balance: ${balance_response.get('balance_dollars', '0.00')}")
     
-    print("\nFetching first 5 open markets in sandbox:")
+    # 2. Grab the first active market ticker dynamically
     markets_response = bot.get_markets()
     markets = markets_response.get("markets", [])
     
-    for i, market in enumerate(markets):
-        print(f"{i+1}. Ticker: {market.get('ticker')} | Title: {market.get('title')}")
+    if markets:
+        target_ticker = markets[0].get("ticker")
+        print(f"Targeting active sandbox ticker: {target_ticker}")
+        
+        # 3. Test placing a sample limit order (buying 1 contract at 50 cents)
+        order_response = bot.place_order(
+            ticker=target_ticker,
+            count=1,
+            price_cents=50,
+            action="buy",
+            side="yes"
+        )
+        print("Order API Response:", json.dumps(order_response, indent=2))
+    else:
+        print("No open markets available right now to place an order.")
