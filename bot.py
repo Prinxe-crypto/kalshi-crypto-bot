@@ -7,13 +7,13 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, padding
 from cryptography.hazmat.primitives import hashes
 
-# --- CONFIGURATION ---
+# --- DEMO CONFIGURATION ---
 BASE_URL = "https://external-api.demo.kalshi.co/trade-api/v2"
 
 API_KEY_ID = os.getenv("KALSHI_API_KEY_ID")
 PRIVATE_KEY_PEM = os.getenv("KALSHI_PRIVATE_KEY")
 
-class KalshiBot:
+class KalshiDemoBot:
     def __init__(self, base_url, api_key_id, private_key_pem):
         self.base_url = base_url
         self.api_key_id = api_key_id
@@ -21,21 +21,25 @@ class KalshiBot:
         if not private_key_pem:
             raise ValueError("Missing KALSHI_PRIVATE_KEY environment variable!")
             
+        cleaned_pem = private_key_pem.strip()
         self.private_key = serialization.load_pem_private_key(
-            private_key_pem.encode("utf-8"), 
+            cleaned_pem.encode("utf-8"), 
             password=None
         )
 
-    def _get_signed_headers(self, method, path):
-        """Generates cryptographic headers supporting both Ed25519 and RSA keys."""
+    def _get_signed_headers(self, method, endpoint_path):
+        """Generates accurate cryptographic authentication headers for Kalshi Demo API."""
         timestamp = str(int(time.time() * 1000))
         
-        full_path = f"/trade-api/v2{path}" if not path.startswith("/trade-api/v2") else path
-        path_only = full_path.split("?")[0]
+        # Kalshi signature format: timestamp + METHOD + /trade-api/v2 + path (no query strings)
+        clean_path = endpoint_path.split("?")[0]
+        if not clean_path.startswith("/trade-api/v2"):
+            sign_path = f"/trade-api/v2{clean_path}"
+        else:
+            sign_path = clean_path
+            
+        message = (timestamp + method.upper() + sign_path).encode("utf-8")
         
-        message = (timestamp + method.upper() + path_only).encode("utf-8")
-        
-        # Check key type and sign accordingly
         if isinstance(self.private_key, ed25519.Ed25519PrivateKey):
             signature = self.private_key.sign(message)
         else:
@@ -62,19 +66,11 @@ class KalshiBot:
         return response.json()
 
     def get_balance(self):
-        """Fetch demo account balance."""
         return self.get("/portfolio/balance")
-
-    def get_crypto_markets(self):
-        """Fetch active crypto markets."""
-        return self.get("/markets", params={"status": "open", "series_ticker": "KXBTC"})
 
 if __name__ == "__main__":
     print("Initializing Kalshi Demo Bot...")
-    bot = KalshiBot(BASE_URL, API_KEY_ID, PRIVATE_KEY_PEM)
+    bot = KalshiDemoBot(BASE_URL, API_KEY_ID, PRIVATE_KEY_PEM)
     
-    balance = bot.get_balance()
-    print("Demo Balance Response:", json.dumps(balance, indent=2))
-    
-    markets = bot.get_crypto_markets()
-    print("Active Crypto Markets Fetched Successfully!")
+    balance_response = bot.get_balance()
+    print("Demo Balance Response:", json.dumps(balance_response, indent=2))
