@@ -63,10 +63,14 @@ class KalshiDemoBot:
     def get_balance(self):
         return self.get("/trade-api/v2/portfolio/balance")
 
-    def get_markets(self):
-        return self.get("/trade-api/v2/markets", params={"status": "open", "limit": 5})
+    def get_markets_for_shard(self, exchange_index):
+        """Fetch open markets specifically matching the given shard index."""
+        res = self.get("/trade-api/v2/markets", params={"status": "open", "limit": 20})
+        markets = res.get("markets", [])
+        # Filter markets matching this shard index
+        return [m for m in markets if m.get("exchange_index", 1) == exchange_index]
 
-    def place_order_v2(self, ticker, count, price_dollar_str):
+    def place_order_v2(self, ticker, count, price_dollar_str, exchange_index):
         path = "/trade-api/v2/portfolio/events/orders"
         client_order_id = f"demo-bot-v2-{int(time.time() * 1000)}"
         
@@ -78,36 +82,66 @@ class KalshiDemoBot:
             "side": "bid",
             "count": str(count),
             "price": price_dollar_str,
-            "exchange_index": -1,  # Enables auto-routing by ticker across shards
+            "exchange_index": exchange_index,
             "time_in_force": "good_till_canceled",
             "self_trade_prevention_type": "taker_at_cross"
         }
         
-        print(f"Submitting V2 Auto-Routed Order: BUY {count}x {ticker} at ${price_dollar_str}")
+        print(f"Submitting Order: BUY {count}x {ticker} at ${price_dollar_str} on Shard {exchange_index}")
         return self.post(path, payload)
 
 if __name__ == "__main__":
     print("Initializing Kalshi Demo Bot...")
     bot = KalshiDemoBot(HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     
-    # 1. Check Balance
+    # 1. Identify which shard actually contains our funds
     balance_response = bot.get_balance()
-    print(f"Total Balance: ${balance_response.get('balance_dollars', '0.00')}")
+    breakdown = balance_response.get("balance_breakdown", [])
     
-    # 2. Grab the first open market
-    markets_response = bot.get_markets()
-    markets = markets_response.get("markets", [])
-    
-    if markets:
-        target_ticker = markets[0].get("ticker")
-        print(f"Targeting active ticker: {target_ticker}")
+    funded_shard = None
+    for entry in breakdown:
+        bal = float(entry.get("balance", "0"))
+        idx = entry.get("exchange_index")
+        print(f"Shard {idx} Balance: {bal}")
+        if bal > 0:
+            funded_shard = idx
+            break
+            
+    if funded_shard is None:
+        funded_shard = 1  # Fallback
         
-        # 3. Place order with auto-routing enabled
+    print(f"Using Active Funded Shard Index: {funded_shard}")
+    
+    # 2. Find a market living on that exact funded shard
+    shard_markets = bot.get_markets_for_shard(funded_shard)
+    
+    if shard_markets:
+        target_market = shard_markets[0]
+        target_ticker = target_market.get("ticker")
+        print(f"Targeting market {target_ticker} on Shard {funded_shard}")
+        
+        # 3. Place the order matching the funded shard index
         order_response = bot.place_order_v2(
             ticker=target_ticker,
             count=1,
-            price_dollar_str="0.50"
+            price_dollar_str="0.50",
+            exchange_index=funded_shard
         )
         print("V2 Order API Response:", json.dumps(order_response, indent=2))
     else:
-        print("No open markets available right now.")
+        print(f"No open markets found on Shard {funded_shard} right now. Retrying with general market fetch...")
+        # Fallback to absolute first market and its respective shard
+        general_res = bot.get("/trade-api/v2/markets", params={"status": "open", "limit": 1})
+        markets = general_res.get("markets", [])
+        if markets:
+            m = markets[0]
+            fallback_ticker = m.get("ticker")
+            fallback_shard = m.get("exchange_index", 1)
+            print(f"Forcing match to market shard: {fallback_shard}")
+            order_response = bot.place_order_v2(
+                ticker=fallback_ticker,
+                count=1,
+                price_dollar_str="0.50",
+                exchange_index=fallback_shard
+            )
+            print("V2 Order API Response:", json.dumps(order_response, indent=2))
