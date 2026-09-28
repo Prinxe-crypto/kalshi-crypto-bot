@@ -66,8 +66,8 @@ class KalshiDemoBot:
     def get_markets(self):
         return self.get("/trade-api/v2/markets", params={"status": "open", "limit": 1})
 
-    def place_order_v2(self, ticker, count, price_cents):
-        """Places a V2 order using the correct 'bid' side syntax."""
+    def place_order_v2(self, ticker, count, price_dollar_str):
+        """Places a V2 order using the correct 'price' string field for fixed-point dollars."""
         path = "/trade-api/v2/portfolio/events/orders"
         client_order_id = f"demo-bot-v2-{int(time.time() * 1000)}"
         
@@ -76,14 +76,14 @@ class KalshiDemoBot:
             "client_order_id": client_order_id,
             "type": "limit",
             "action": "buy",
-            "side": "bid",                  # Must be "bid" or "ask" for V2
-            "count": str(count),            # Must be a string
-            "yes_price": int(price_cents),  # Integer cents
+            "side": "bid",                          # "bid" for buying YES leg
+            "count": str(count),                    # Must be a string (e.g., "1")
+            "price": price_dollar_str,              # Must be fixed-point dollar string (e.g., "0.50")
             "time_in_force": "good_till_canceled",
             "self_trade_prevention_type": "taker_at_cross"
         }
         
-        print(f"Submitting V2 Order: BUY {count}x {ticker} at {price_cents}¢ (BID)")
+        print(f"Submitting V2 Order: BUY {count}x {ticker} at ${price_dollar_str} (BID)")
         return self.post(path, payload)
 
 if __name__ == "__main__":
@@ -102,11 +102,11 @@ if __name__ == "__main__":
         target_ticker = markets[0].get("ticker")
         print(f"Targeting active sandbox ticker: {target_ticker}")
         
-        # 3. Test placing the corrected V2 order
+        # 3. Test placing the corrected V2 order with price as a dollar string ("0.50")
         order_response = bot.place_order_v2(
             ticker=target_ticker,
             count=1,
-            price_cents=50
+            price_dollar_str="0.50"
         )
         print("V2 Order API Response:", json.dumps(order_response, indent=2))
     else:
