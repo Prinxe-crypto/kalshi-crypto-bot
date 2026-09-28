@@ -64,7 +64,8 @@ class KalshiDemoBot:
         return self.get("/trade-api/v2/portfolio/balance")
 
     def get_markets(self):
-        return self.get("/trade-api/v2/markets", params={"status": "open", "limit": 5})
+        # Fetch a larger batch to ensure we catch a Shard 2 market
+        return self.get("/trade-api/v2/markets", params={"status": "open", "limit": 100})
 
     def place_order_v2(self, ticker, count, price_dollar_str, exchange_index):
         path = "/trade-api/v2/portfolio/events/orders"
@@ -94,24 +95,27 @@ if __name__ == "__main__":
     balance_response = bot.get_balance()
     print(f"Total Balance: ${balance_response.get('balance_dollars', '0.00')}")
     
-    # 2. Grab the first available open market and dynamically read its shard index
+    # 2. Scan open markets and filter strictly for exchange_index == 2
     markets_response = bot.get_markets()
     markets = markets_response.get("markets", [])
     
-    if markets:
-        target_market = markets[0]
+    target_market = None
+    for m in markets:
+        if m.get("exchange_index") == 2:
+            target_market = m
+            break
+            
+    if target_market:
         target_ticker = target_market.get("ticker")
-        shard_idx = target_market.get("exchange_index", 0)
+        print(f"Found Shard 2 market ticker: {target_ticker}")
         
-        print(f"Found active market ticker: {target_ticker} on Shard {shard_idx}")
-        
-        # 3. Place order targeting that exact shard
+        # 3. Place order targeting Shard 2
         order_response = bot.place_order_v2(
             ticker=target_ticker,
             count=1,
             price_dollar_str="0.50",
-            exchange_index=shard_idx
+            exchange_index=2
         )
         print("V2 Order API Response:", json.dumps(order_response, indent=2))
     else:
-        print("No open markets available right now.")
+        print("No open markets found on Shard 2 in this batch.")
