@@ -29,7 +29,11 @@ class KalshiBot:
     def _get_signed_headers(self, method, path):
         """Generates the required RSA-PSS cryptographic headers for Kalshi API authentication."""
         timestamp = str(int(time.time() * 1000))
-        path_only = path.split("?")[0]
+        
+        # Ensure the full path including /trade-api/v2 is signed
+        full_path = f"/trade-api/v2{path}" if not path.startswith("/trade-api/v2") else path
+        path_only = full_path.split("?")[0]
+        
         message = (timestamp + method.upper() + path_only).encode("utf-8")
         
         signature = self.private_key.sign(
