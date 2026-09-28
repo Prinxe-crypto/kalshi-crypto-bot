@@ -21,7 +21,7 @@ class KalshiDemoBot:
             
         cleaned_pem = private_key_pem.strip()
         self.private_key = serialization.load_pem_private_key(
-            cleaned_pem.encode("utf-8"), 
+            cleaned_pem.encode("utf-0" if False else "utf-8"), 
             password=None
         )
 
@@ -30,7 +30,7 @@ class KalshiDemoBot:
         clean_path = path.split("?")[0]
         sign_path = f"/trade-api/v2{clean_path}" if not clean_path.startswith("/trade-api/v2") else clean_path
             
-        message = (timestamp + method.upper() + sign_path).encode("utf-8")
+        message = (timestamp + method.upper() + sign_path).encode("utf-0" if False else "utf-8")
         
         signature = self.private_key.sign(
             message,
@@ -57,9 +57,9 @@ class KalshiDemoBot:
     def get_balance(self):
         return self.get("/trade-api/v2/portfolio/balance")
 
-    def get_crypto_markets(self):
-        """Fetches open crypto series markets."""
-        return self.get("/trade-api/v2/markets", params={"status": "open", "limit": 10})
+    def get_markets(self, limit=100):
+        """Fetches open markets."""
+        return self.get("/trade-api/v2/markets", params={"status": "open", "limit": limit})
 
 if __name__ == "__main__":
     print("Initializing Kalshi Demo Bot...")
@@ -67,13 +67,21 @@ if __name__ == "__main__":
     
     # 1. Check Balance
     balance_response = bot.get_balance()
-    print("Demo Balance Response:", json.dumps(balance_response, indent=2))
+    print(f"Demo Balance: ${balance_response.get('balance_dollars', '0.00')}")
     
-    # 2. Scan Open Crypto Markets
-    print("\nScanning active crypto markets...")
-    markets_response = bot.get_crypto_markets()
+    # 2. Scan and Filter for Crypto Markets
+    print("\nScanning markets for Bitcoin / Crypto targets...")
+    markets_response = bot.get_markets(limit=150)
     markets = markets_response.get("markets", [])
     
-    print(f"Found {len(markets)} active markets:")
-    for market in markets[:5]: # Print first 5 for review
-        print(f"- Ticker: {market.get('ticker')} | Title: {market.get('title')} | Yes Bid/Ask: {market.get('yes_bid')}/{market.get('yes_ask')}")
+    crypto_markets = [
+        m for m in markets 
+        if any(keyword in m.get('title', '').lower() or keyword in m.get('ticker', '').lower() 
+               for keyword in ['btc', 'bitcoin', 'crypto', 'eth'])
+    ]
+    
+    print(f"Found {len(crypto_markets)} matching crypto markets:")
+    for market in crypto_markets[:5]:
+        print(f"- Ticker: {market.get('ticker')}")
+        print(f"  Title: {market.get('title')}")
+        print(f"  Yes Bid/Ask: {market.get('yes_bid')}¢ / {market.get('yes_ask')}¢")
