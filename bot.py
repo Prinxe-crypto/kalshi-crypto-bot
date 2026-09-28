@@ -64,10 +64,10 @@ class KalshiDemoBot:
         return self.get("/trade-api/v2/portfolio/balance")
 
     def get_markets(self):
-        return self.get("/trade-api/v2/markets", params={"status": "open", "limit": 1})
+        return self.get("/trade-api/v2/markets", params={"status": "open", "limit": 10})
 
-    def place_order_v2(self, ticker, count, price_dollar_str):
-        """Places a V2 order using the correct 'price' string field for fixed-point dollars."""
+    def place_order_v2(self, ticker, count, price_dollar_str, exchange_index=2):
+        """Places a V2 order matching the correct exchange shard index."""
         path = "/trade-api/v2/portfolio/events/orders"
         client_order_id = f"demo-bot-v2-{int(time.time() * 1000)}"
         
@@ -76,38 +76,51 @@ class KalshiDemoBot:
             "client_order_id": client_order_id,
             "type": "limit",
             "action": "buy",
-            "side": "bid",                          # "bid" for buying YES leg
-            "count": str(count),                    # Must be a string (e.g., "1")
-            "price": price_dollar_str,              # Must be fixed-point dollar string (e.g., "0.50")
+            "side": "bid",
+            "count": str(count),
+            "price": price_dollar_str,
+            "exchange_index": exchange_index,  # Target the shard where your funds live
             "time_in_force": "good_till_canceled",
             "self_trade_prevention_type": "taker_at_cross"
         }
         
-        print(f"Submitting V2 Order: BUY {count}x {ticker} at ${price_dollar_str} (BID)")
+        print(f"Submitting V2 Order: BUY {count}x {ticker} at ${price_dollar_str} on Shard {exchange_index}")
         return self.post(path, payload)
 
 if __name__ == "__main__":
     print("Initializing Kalshi Demo Bot...")
     bot = KalshiDemoBot(HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     
-    # 1. Check Balance
+    # 1. Check Balance and find funded shard
     balance_response = bot.get_balance()
-    print(f"Demo Balance: ${balance_response.get('balance_dollars', '0.00')}")
+    print(f"Total Balance: ${balance_response.get('balance_dollars', '0.00')}")
     
-    # 2. Grab an active sandbox ticker
+    # 2. Scan open markets to find one matching exchange_index 2 (where your $112 is)
     markets_response = bot.get_markets()
     markets = markets_response.get("markets", [])
     
-    if markets:
-        target_ticker = markets[0].get("ticker")
-        print(f"Targeting active sandbox ticker: {target_ticker}")
+    target_market = None
+    for m in markets:
+        # Check if market lives on exchange_index 2 or default to it
+        if m.get("exchange_index", 2) == 2:
+            target_market = m
+            break
+            
+    if not target_market and markets:
+        target_market = markets[0]
         
-        # 3. Test placing the corrected V2 order with price as a dollar string ("0.50")
+    if target_market:
+        target_ticker = target_market.get("ticker")
+        shard_idx = target_market.get("exchange_index", 2)
+        print(f"Targeting ticker: {target_ticker} on shard {shard_idx}")
+        
+        # 3. Test placing the order on the matching shard
         order_response = bot.place_order_v2(
             ticker=target_ticker,
             count=1,
-            price_dollar_str="0.50"
+            price_dollar_str="0.50",
+            exchange_index=shard_idx
         )
         print("V2 Order API Response:", json.dumps(order_response, indent=2))
     else:
-        print("No open markets available right now.")
+        print("No open markets available.")
