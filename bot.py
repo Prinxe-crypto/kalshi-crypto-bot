@@ -67,19 +67,20 @@ class KalshiDemoBot:
         return self.get("/trade-api/v2/markets", params={"status": "open", "limit": 1})
 
     def place_order_v2(self, ticker, count, price_cents, side="yes"):
-        """Places an order using Kalshi's V2 endpoint (`/trade-api/v2/portfolio/events/orders`)."""
+        """Places an order using Kalshi's V2 endpoint with string-formatted count & price."""
         path = "/trade-api/v2/portfolio/events/orders"
         client_order_id = f"demo-bot-v2-{int(time.time() * 1000)}"
         
-        # V2 Payload structure
+        # V2 Payload structure requiring string formats for numbers
         payload = {
             "ticker": ticker,
             "client_order_id": client_order_id,
             "type": "limit",
             "action": "buy",
-            "side": side,          # "yes" or "no"
-            "count": count,
-            "yes_price": price_cents
+            "side": side,
+            "count": str(count),         # Must be a string (e.g., "1")
+            "yes_price": int(price_cents), # Cents integer or fixed-point string depending on strict field rules
+            "time_in_force": "good_till_canceled"
         }
         
         print(f"Submitting V2 Order: BUY {count}x {ticker} at {price_cents}¢ ({side.upper()})")
@@ -101,7 +102,7 @@ if __name__ == "__main__":
         target_ticker = markets[0].get("ticker")
         print(f"Targeting active sandbox ticker: {target_ticker}")
         
-        # 3. Test placing a V2 limit order
+        # 3. Test placing the corrected V2 order
         order_response = bot.place_order_v2(
             ticker=target_ticker,
             count=1,
