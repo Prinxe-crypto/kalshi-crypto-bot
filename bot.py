@@ -66,8 +66,8 @@ class KalshiDemoBot:
     def get_markets(self):
         return self.get("/trade-api/v2/markets", params={"status": "open", "limit": 1})
 
-    def place_order_v2(self, ticker, count, price_cents, side="yes"):
-        """Places a V2 order including the required self_trade_prevention_type field."""
+    def place_order_v2(self, ticker, count, price_cents):
+        """Places a V2 order using the correct 'bid' side syntax."""
         path = "/trade-api/v2/portfolio/events/orders"
         client_order_id = f"demo-bot-v2-{int(time.time() * 1000)}"
         
@@ -76,14 +76,14 @@ class KalshiDemoBot:
             "client_order_id": client_order_id,
             "type": "limit",
             "action": "buy",
-            "side": side,
-            "count": str(count),
-            "yes_price": int(price_cents),
+            "side": "bid",                  # Must be "bid" or "ask" for V2
+            "count": str(count),            # Must be a string
+            "yes_price": int(price_cents),  # Integer cents
             "time_in_force": "good_till_canceled",
-            "self_trade_prevention_type": "taker_at_cross"  # Required by V2 schema
+            "self_trade_prevention_type": "taker_at_cross"
         }
         
-        print(f"Submitting V2 Order: BUY {count}x {ticker} at {price_cents}¢ ({side.upper()})")
+        print(f"Submitting V2 Order: BUY {count}x {ticker} at {price_cents}¢ (BID)")
         return self.post(path, payload)
 
 if __name__ == "__main__":
@@ -102,12 +102,11 @@ if __name__ == "__main__":
         target_ticker = markets[0].get("ticker")
         print(f"Targeting active sandbox ticker: {target_ticker}")
         
-        # 3. Test placing the complete V2 order
+        # 3. Test placing the corrected V2 order
         order_response = bot.place_order_v2(
             ticker=target_ticker,
             count=1,
-            price_cents=50,
-            side="yes"
+            price_cents=50
         )
         print("V2 Order API Response:", json.dumps(order_response, indent=2))
     else:
