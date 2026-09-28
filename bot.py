@@ -64,10 +64,9 @@ class KalshiDemoBot:
         return self.get("/trade-api/v2/portfolio/balance")
 
     def get_markets(self):
-        return self.get("/trade-api/v2/markets", params={"status": "open", "limit": 10})
+        return self.get("/trade-api/v2/markets", params={"status": "open", "limit": 50})
 
     def place_order_v2(self, ticker, count, price_dollar_str, exchange_index=2):
-        """Places a V2 order matching the correct exchange shard index."""
         path = "/trade-api/v2/portfolio/events/orders"
         client_order_id = f"demo-bot-v2-{int(time.time() * 1000)}"
         
@@ -79,7 +78,7 @@ class KalshiDemoBot:
             "side": "bid",
             "count": str(count),
             "price": price_dollar_str,
-            "exchange_index": exchange_index,  # Target the shard where your funds live
+            "exchange_index": exchange_index,
             "time_in_force": "good_till_canceled",
             "self_trade_prevention_type": "taker_at_cross"
         }
@@ -91,36 +90,30 @@ if __name__ == "__main__":
     print("Initializing Kalshi Demo Bot...")
     bot = KalshiDemoBot(HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     
-    # 1. Check Balance and find funded shard
+    # 1. Check Balance
     balance_response = bot.get_balance()
     print(f"Total Balance: ${balance_response.get('balance_dollars', '0.00')}")
     
-    # 2. Scan open markets to find one matching exchange_index 2 (where your $112 is)
+    # 2. Find a market explicitly on Shard 2 (where funds exist)
     markets_response = bot.get_markets()
     markets = markets_response.get("markets", [])
     
     target_market = None
     for m in markets:
-        # Check if market lives on exchange_index 2 or default to it
-        if m.get("exchange_index", 2) == 2:
+        if m.get("exchange_index") == 2:
             target_market = m
             break
             
-    if not target_market and markets:
-        target_market = markets[0]
-        
     if target_market:
         target_ticker = target_market.get("ticker")
-        shard_idx = target_market.get("exchange_index", 2)
-        print(f"Targeting ticker: {target_ticker} on shard {shard_idx}")
+        print(f"Targeting Shard 2 market ticker: {target_ticker}")
         
-        # 3. Test placing the order on the matching shard
         order_response = bot.place_order_v2(
             ticker=target_ticker,
             count=1,
             price_dollar_str="0.50",
-            exchange_index=shard_idx
+            exchange_index=2
         )
         print("V2 Order API Response:", json.dumps(order_response, indent=2))
     else:
-        print("No open markets available.")
+        print("No open markets found specifically on Shard 2 right now.")
