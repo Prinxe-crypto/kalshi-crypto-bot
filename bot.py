@@ -60,57 +60,31 @@ class KalshiHybridBot:
             print(f"Error fetching data: {e}")
             return {}
 
-    def post(self, path, payload):
-        if PAPER_DRY_RUN:
+    def post(self, path, payload, use_sandbox=True):
+        if PAPER_DRY_RUN and use_sandbox:
             return {"status": "success", "order_id": f"paper-sim-{int(time.time())}"}
             
-        url = self.sandbox_host + path
+        host = self.sandbox_host if use_sandbox else self.prod_host
+        url = host + path
         headers = self._get_signed_headers("POST", path)
         response = requests.post(url, headers=headers, data=json.dumps(payload))
         return response.json()
 
-    def get_real_markets(self):
-        """Finds the REAL combo markets (Multivariate) and the standard single legs."""
-        try:
-            combo_tickers = []
-            single_tickers = []
-            
-            # 1. Get standard single legs (BTC)
-            btc_response = self.get("/trade-api/v2/markets", params={"series_ticker": "KXBTC15M", "status": "open"})
-            for m in btc_response.get("markets", []):
-                single_tickers.append(m.get("ticker", ""))
-                
-            # 2. Get real COMBO markets using the dedicated multivariate endpoint
-            combo_response = self.get("/trade-api/v2/events/multivariate", params={"status": "open"})
-            
-            all_events = combo_response.get("events", [])
-            
-            # DEBUG: Print out what the events are actually titled
-            print("\n--- DEBUG: KALSHI MULTIVARIATE TITLES ---")
-            for event in all_events[:5]:
-                title = event.get('title', event.get('sub_title', 'No Title'))
-                ticker = event.get('event_ticker', 'Unknown')
-                print(f"[{ticker}] -> {title}")
-            print("-----------------------------------------\n")
-
-            for event in all_events:
-                ticker = event.get("event_ticker", "")
-                
-                # Check the title, subtitle, and raw string dump of the event to find BTC/ETH
-                event_string = str(event).upper()
-                if "BTC" in event_string and "ETH" in event_string: 
-                    combo_tickers.append(ticker)
-                    
-            return combo_tickers, single_tickers
-        except Exception as e:
-            print(f"API Error: {e}")
-            return [], []
+    def create_custom_combo_market(self, collection_ticker, selected_markets_payload):
+        """Programmatically creates/instantiates the custom combo market on Kalshi."""
+        path = f"/trade-api/v2/multivariate_event_collections/{collection_ticker}"
+        payload = {
+            "selected_markets": selected_markets_payload,
+            "with_market_payload": True
+        }
+        # Market creation requires production write access or signed headers
+        response = self.post(path, payload, use_sandbox=False)
+        return response
 
 
 class ComboKStrategy:
     def __init__(self, bot):
         self.bot = bot
-        self.total_runs = 0
 
     def get_orderbook(self, ticker):
         try:
@@ -128,7 +102,7 @@ class ComboKStrategy:
             return pd.DataFrame(columns=["price", "size"])
 
     def plan_matched_pairs(self, combo_book, single_book, target_size=1):
-        # EXACT LIMITS YOU SET
+        # EXACT LIMITS LOCKED IN
         combo_max = 0.35
         single_max = 0.55
         combined_cap = 0.90
@@ -137,7 +111,7 @@ class ComboKStrategy:
         valid_single = single_book[single_book["price"] <= single_max].copy()
 
         if valid_combo.empty or valid_single.empty:
-            return {"filled_size": 0, "reason": "Prices are higher than $0.35 (combo) or $0.55 (single), or book is empty."}
+            return {"filled_size": 0, "reason": "Prices exceed $0.35 (combo) or $0.55 (single), or book is empty."}
 
         combo_price = valid_combo.iloc[0]["price"]
         single_price = valid_single.iloc[0]["price"]
@@ -156,33 +130,36 @@ class ComboKStrategy:
 
 
 if __name__ == "__main__":
-    print("Starting bot with REAL Combo Markets, Advanced Scanning, and fixed $0.35/$0.55 limits...")
+    print("Starting bot with Programmatic Custom Combo Creation...")
     bot = KalshiHybridBot(PROD_HOST, SANDBOX_HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     strategy = ComboKStrategy(bot)
     
-    combo_list, single_list = bot.get_real_markets()
+    # Example structure for your custom manual combo creation payload
+    # (Replace collection_ticker and selected_markets with your target legs)
+    collection_ticker = "KXMVECROSSCATEGORY-SHARD1" 
+    selected_markets = [] # Add your specific child market tickers here when ready
     
-    if not combo_list or not single_list:
-        print("Waiting for BTC/ETH combos to open. Check the debug list above to see what is currently active.")
+    print(f"Instantiating custom combo under collection: {collection_ticker}")
+    creation_res = bot.create_custom_combo_market(collection_ticker, selected_markets)
+    print(f"Creation Response: {creation_res}")
+    
+    # Extract the resulting custom market ticker if successfully created
+    custom_combo_ticker = creation_res.get("market_ticker", "")
+    single_leg_ticker = "KXBTC15M-26..." # Your target single leg ticker
+    
+    if not custom_combo_ticker:
+        print("Waiting for valid manual market creation payload parameters.")
     else:
-        combo_ticker = combo_list[0] if combo_list else ""
-        single_ticker = single_list[0] if single_list else ""
-        
-        print(f"\nChecking Real Combo: {combo_ticker}")
-        print(f"Checking Single Leg: {single_ticker}")
-            
-        combo_book = strategy.get_orderbook(combo_ticker)
-        single_book = strategy.get_orderbook(single_ticker)
+        combo_book = strategy.get_orderbook(custom_combo_ticker)
+        single_book = strategy.get_orderbook(single_leg_ticker)
         
         plan = strategy.plan_matched_pairs(combo_book, single_book, target_size=random.randint(1, 5))
         
         print("\n--- RESULTS ---")
         if plan.get("filled_size", 0) > 0:
             print(f"🟢 SUCCESS! Found prices under your limits.")
-            print(f"Bought {plan['filled_size']} contracts.")
             print(f"Combo cost: ${plan['combo_price']} (Limit: $0.35)")
             print(f"Single cost: ${plan['single_price']} (Limit: $0.55)")
             print(f"Total spent: ${plan['total_cost']} (Cap: $0.90)")
-            print(f"You secured the pair for ${plan['profit_buffer']} cheaper than your max cap.")
         else:
             print(f"🔴 REJECTED: {plan['reason']}")
