@@ -207,7 +207,7 @@ if __name__ == "__main__":
     balance_response = bot.get_balance()
     print(f"Account Balance: ${balance_response.get('balance_dollars', '0.00')}")
     
-    # 2. Run Diagnostic Combo Discovery (Step 1 from addon)
+    # 2. Run Diagnostic Combo Discovery
     print("\nDiscovering multivariate combo collections...")
     collections = strategy.discover_combo_collections()
     print("Collections Response:", json.dumps(collections, indent=2))
