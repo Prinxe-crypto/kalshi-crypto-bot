@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     # Runs every hour on the hour (UTC time)
-    # You can adjust this schedule as needed (e.g., '*/30 * * * *' for every 30 mins)
+    # Change this to '*/30 * * * *' if you want it every 30 minutes
     - cron: '0 * * * *'
 
 jobs:
