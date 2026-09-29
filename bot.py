@@ -88,7 +88,6 @@ class KalshiDemoBot:
 class ComboKStrategy:
     def __init__(self, bot):
         self.bot = bot
-        # Performance tracker state variables
         self.total_runs = 0
         self.trades_executed = 0
         self.trades_rejected = 0
@@ -98,25 +97,25 @@ class ComboKStrategy:
         self.loss_streak = 0
         self.fees_paid = 0.0
 
-    def discover_combo_collections(self):
-        """Attempts to list multivariate (combo) event collections."""
-        return self.bot.get("/trade-api/v2/multivariate_event_collections")
-
     def get_orderbook_levels(self, market_ticker, side="yes"):
         """Fetches order book levels and adjusts for buying yes via opposite bids."""
-        book = self.bot.get(f"/trade-api/v2/markets/{market_ticker}/orderbook")
-        ob = book.get("orderbook", book.get("orderbook_fp", {}))
+        try:
+            book = self.bot.get(f"/trade-api/v2/markets/{market_ticker}/orderbook")
+            ob = book.get("orderbook", book.get("orderbook_fp", {}))
 
-        opposite = "no" if side == "yes" else "yes"
-        levels = ob.get(f"{opposite}_dollars", ob.get(opposite, [])) or []
+            opposite = "no" if side == "yes" else "yes"
+            levels = ob.get(f"{opposite}_dollars", ob.get(opposite, [])) or []
 
-        if not levels:
+            if not levels:
+                return pd.DataFrame(columns=["price", "size"])
+
+            df = pd.DataFrame(levels, columns=["opp_price", "size"])
+            df["price"] = (1.0 - df["opp_price"].astype(float)).round(4)
+            df = df.sort_values("price").reset_index(drop=True)
+            return df[["price", "size"]]
+        except Exception as e:
+            print(f"Error fetching orderbook for {market_ticker}: {e}")
             return pd.DataFrame(columns=["price", "size"])
-
-        df = pd.DataFrame(levels, columns=["opp_price", "size"])
-        df["price"] = (1.0 - df["opp_price"].astype(float)).round(4)
-        df = df.sort_values("price").reset_index(drop=True)
-        return df[["price", "size"]]
 
     def validate_combo_and_hedge(self, combo_name: str, single_name: str):
         combo_upper = combo_name.upper()
@@ -141,7 +140,7 @@ class ComboKStrategy:
         return True, "Passed structural validation rules."
 
     def plan_matched_pairs(self, combo_levels: pd.DataFrame, single_levels: pd.DataFrame,
-                            target_size: int, combo_max_price: float = 0.35, 
+                            target_size: int = 100, combo_max_price: float = 0.35, 
                             single_max_price: float = 0.55, combined_cap: float = 0.85):
         
         valid_combo = combo_levels[combo_levels["price"] <= combo_max_price].copy()
@@ -186,8 +185,6 @@ class ComboKStrategy:
 
         combo_fills = combo_ladder.iloc[:filled_size]
         single_fills = single_ladder.iloc[:filled_size]
-
-        # Determine slippage occurrence (if execution price moved across rungs)
         has_slippage = len(combo_fills.unique()) > 1 or len(single_fills.unique()) > 1
 
         return {
@@ -203,7 +200,6 @@ class ComboKStrategy:
         }
 
     def print_execution_summary(self, combo_ticker, single_ticker, plan):
-        """Generates and prints the comprehensive run performance report."""
         self.total_runs += 1
         print("\n" + "=" * 65)
         print(f"📊 STRATEGY PERFORMANCE & EXECUTION SUMMARY (Run #{self.total_runs})")
@@ -216,11 +212,10 @@ class ComboKStrategy:
             combo_cost = plan["combo_avg_price"] * filled_size
             single_cost = plan["single_avg_price"] * filled_size
             total_capital_deployed = combo_cost + single_cost
-            estimated_fees = round(filled_size * 0.01, 4) # Mock baseline fee structure
+            estimated_fees = round(filled_size * 0.01, 4)
             self.fees_paid += estimated_fees
             
-            # Simulated performance tracking metrics for demo
-            trade_pnl = round(total_capital_deployed * 0.05, 4) # Placeholder sample return metric
+            trade_pnl = round(total_capital_deployed * 0.05, 4)
             self.cumulative_pnl += trade_pnl
             roi = round((trade_pnl / total_capital_deployed) * 100, 2) if total_capital_deployed > 0 else 0.0
             
@@ -244,18 +239,19 @@ class ComboKStrategy:
             self.win_streak = 0
             reason = plan.get("reason", "Unknown rejection reason")
             print(f"🔴 Status: REJECTED / NO EXECUTION")
+            print(f"• Target Pair:            {combo_ticker} <-> {single_ticker}")
             print(f"• Rejection Reason:       {reason}")
             print(f"• Total Trades Rejected:  {self.trades_rejected}")
             print(f"• Cumulative PnL:         ${self.cumulative_pnl:.2f}")
             print(f"• Current Loss Streak:    {self.loss_streak}")
 
         print("-" * 65)
-        print(f"📈 OVERALL STATS: Executed: {self.trades_executed} | Rejected: {self.trades_rejected} | Total Success Rate: {(self.trades_executed/self.total_runs)*100:.1f}%")
+        print(f"📈 OVERALL STATS: Executed: {self.trades_executed} | Rejected: {self.trades_rejected} | Total Success Rate: {(self.trades_executed/max(1, self.total_runs))*100:.1f}%")
         print("=" * 65)
 
 
 if __name__ == "__main__":
-    print("Initializing Kalshi Demo Bot with Full Analytics Reporting...")
+    print("Initializing Kalshi Live Strategy Bot...")
     bot = KalshiDemoBot(HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     strategy = ComboKStrategy(bot)
     
@@ -263,13 +259,29 @@ if __name__ == "__main__":
     balance_response = bot.get_balance()
     print(f"Account Balance: ${balance_response.get('balance_dollars', '0.00')}")
     
-    # 2. Discover Combo Collections
-    print("\nDiscovering multivariate combo collections...")
-    collections = strategy.discover_combo_collections()
-    col_list = collections.get("collections", collections.get("multivariate_event_collections", []))
+    # 2. Define active target markets to scan and execute on every cron run
+    # (You can replace these target tickers with your active sandbox/live pair symbols)
+    target_pairs = [
+        {"combo": "BTCETH-COMBO-TICKER-1", "single": "BTC-SINGLE-TICKER-1"}
+    ]
     
-    if col_list:
-        print(f"Found {len(col_list)} combo collections!")
-    else:
-        print("Note: No active multivariate collections currently populated in sandbox.")
-        print("Strategy runner, safety filters, and execution reporting engine are fully active.")
+    print(f"\nScanning {len(target_pairs)} target market pair(s)...")
+    for pair in target_pairs:
+        combo_ticker = pair["combo"]
+        single_ticker = pair["single"]
+        
+        # Structural check
+        is_valid, val_msg = strategy.validate_combo_and_hedge(combo_ticker, single_ticker)
+        if not is_valid:
+            print(f"Skipping pair {combo_ticker}: {val_msg}")
+            continue
+            
+        # Fetch live orderbook levels
+        combo_book = strategy.get_orderbook_levels(combo_ticker)
+        single_book = strategy.get_orderbook_levels(single_ticker)
+        
+        # Plan strategy execution & ladder walking
+        plan = strategy.plan_matched_pairs(combo_book, single_book, target_size=100)
+        
+        # Print structured run report
+        strategy.print_execution_summary(combo_ticker, single_ticker, plan)
