@@ -80,15 +80,15 @@ class KalshiHybridBot:
             for m in btc_response.get("markets", []):
                 single_tickers.append(m.get("ticker", ""))
                 
-            # 2. Get real COMBO markets
-            combo_response = self.get("/trade-api/v2/events", params={"status": "open"})
+            # 2. Get real COMBO markets using the dedicated multivariate endpoint
+            combo_response = self.get("/trade-api/v2/events/multivariate", params={"status": "open"})
             
-            # DEBUG: Print out the first 10 event tickers Kalshi gives us
-            print("\n--- DEBUG: WHAT KALSHI CALLS THEIR EVENTS ---")
+            # DEBUG: Print out the multivariate event tickers Kalshi gives us
+            print("\n--- DEBUG: KALSHI MULTIVARIATE EVENTS ---")
             all_events = combo_response.get("events", [])
             for event in all_events[:10]:
-                print(f"Event Ticker found: {event.get('event_ticker', 'Unknown')}")
-            print("---------------------------------------------\n")
+                print(f"Combo Event Ticker found: {event.get('event_ticker', 'Unknown')}")
+            print("-----------------------------------------\n")
 
             for event in all_events:
                 ticker = event.get("event_ticker", "")
