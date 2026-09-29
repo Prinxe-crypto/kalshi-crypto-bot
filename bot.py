@@ -64,6 +64,31 @@ class KalshiDemoBot:
     def get_balance(self):
         return self.get("/trade-api/v2/portfolio/balance")
 
+    def get_active_crypto_15m_markets(self):
+        """Dynamically queries active 15-minute crypto markets for BTC and ETH."""
+        try:
+            response = self.get("/trade-api/v2/markets", params={"status": "open", "limit": 100})
+            markets = response.get("markets", [])
+            
+            btc_tickers = []
+            eth_tickers = []
+            
+            for m in markets:
+                ticker = m.get("ticker", "")
+                series = m.get("series_ticker", "").upper()
+                title = m.get("title", "").upper()
+                
+                if "15M" in series or "15M" in ticker or "15-MIN" in title:
+                    if "BTC" in ticker or "BITCOIN" in title:
+                        btc_tickers.append(ticker)
+                    elif "ETH" in ticker or "ETHEREUM" in title:
+                        eth_tickers.append(ticker)
+            
+            return btc_tickers, eth_tickers
+        except Exception as e:
+            print(f"Error fetching active 15m markets: {e}")
+            return [], []
+
     def place_order_v2(self, ticker, count, price_dollar_str, exchange_index=2):
         path = "/trade-api/v2/portfolio/events/orders"
         client_order_id = f"demo-bot-combo-{int(time.time() * 1000)}"
@@ -98,7 +123,6 @@ class ComboKStrategy:
         self.fees_paid = 0.0
 
     def get_orderbook_levels(self, market_ticker, side="yes"):
-        """Fetches order book levels and adjusts for buying yes via opposite bids."""
         try:
             book = self.bot.get(f"/trade-api/v2/markets/{market_ticker}/orderbook")
             ob = book.get("orderbook", book.get("orderbook_fp", {}))
@@ -251,7 +275,7 @@ class ComboKStrategy:
 
 
 if __name__ == "__main__":
-    print("Initializing Kalshi Live Strategy Bot...")
+    print("Initializing Kalshi Live Strategy Bot with Dynamic 15m Discovery...")
     bot = KalshiDemoBot(HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     strategy = ComboKStrategy(bot)
     
@@ -259,29 +283,26 @@ if __name__ == "__main__":
     balance_response = bot.get_balance()
     print(f"Account Balance: ${balance_response.get('balance_dollars', '0.00')}")
     
-    # 2. Define active target markets to scan and execute on every cron run
-    # (You can replace these target tickers with your active sandbox/live pair symbols)
-    target_pairs = [
-        {"combo": "BTCETH-COMBO-TICKER-1", "single": "BTC-SINGLE-TICKER-1"}
-    ]
+    # 2. Dynamically fetch active 15m BTC and ETH markets
+    print("\nScanning active 15-minute BTC and ETH markets...")
+    btc_list, eth_list = bot.get_active_crypto_15m_markets()
     
-    print(f"\nScanning {len(target_pairs)} target market pair(s)...")
-    for pair in target_pairs:
-        combo_ticker = pair["combo"]
-        single_ticker = pair["single"]
+    if not btc_list or not eth_list:
+        print("Note: No active 15-minute BTC/ETH contracts returned from sandbox exchange right now.")
+    else:
+        target_pairs = [{"combo": btc_list[0], "single": eth_list[0]}]
         
-        # Structural check
-        is_valid, val_msg = strategy.validate_combo_and_hedge(combo_ticker, single_ticker)
-        if not is_valid:
-            print(f"Skipping pair {combo_ticker}: {val_msg}")
-            continue
+        for pair in target_pairs:
+            combo_ticker = pair["combo"]
+            single_ticker = pair["single"]
             
-        # Fetch live orderbook levels
-        combo_book = strategy.get_orderbook_levels(combo_ticker)
-        single_book = strategy.get_orderbook_levels(single_ticker)
-        
-        # Plan strategy execution & ladder walking
-        plan = strategy.plan_matched_pairs(combo_book, single_book, target_size=100)
-        
-        # Print structured run report
-        strategy.print_execution_summary(combo_ticker, single_ticker, plan)
+            is_valid, val_msg = strategy.validate_combo_and_hedge(combo_ticker, single_ticker)
+            if not is_valid:
+                print(f"Skipping pair {combo_ticker}: {val_msg}")
+                continue
+                
+            combo_book = strategy.get_orderbook_levels(combo_ticker)
+            single_book = strategy.get_orderbook_levels(single_ticker)
+            
+            plan = strategy.plan_matched_pairs(combo_book, single_book, target_size=100)
+            strategy.print_execution_summary(combo_ticker, single_ticker, plan)
