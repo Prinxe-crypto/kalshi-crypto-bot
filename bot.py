@@ -2,6 +2,7 @@ import os
 import time
 import base64
 import json
+import random
 import requests
 import pandas as pd
 from cryptography.hazmat.primitives import hashes, serialization
@@ -161,7 +162,7 @@ class ComboKStrategy:
         return True, "Passed structural validation rules."
 
     def plan_matched_pairs(self, combo_levels: pd.DataFrame, single_levels: pd.DataFrame,
-                            target_size: int = 100, combo_max_price: float = 0.40, 
+                            target_size: int = 5, combo_max_price: float = 0.40, 
                             single_max_price: float = 0.60, combined_cap: float = 0.90):
         
         valid_combo = combo_levels[combo_levels["price"] <= combo_max_price].copy()
@@ -272,7 +273,7 @@ class ComboKStrategy:
 
 
 if __name__ == "__main__":
-    print("Initializing Kalshi Live Strategy Bot with Timestamp Matching...")
+    print("Initializing Kalshi Live Strategy Bot with 1-10 Contract Sizing...")
     bot = KalshiDemoBot(HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     strategy = ComboKStrategy(bot)
     
@@ -287,7 +288,6 @@ if __name__ == "__main__":
     if not btc_list or not eth_list:
         print("Note: No active 15-minute BTC/ETH series contracts currently open on the sandbox.")
     else:
-        # Strictly match contracts sharing the exact same timestamp suffix
         target_pairs = []
         for btc_t in btc_list:
             parts = btc_t.split("-")
@@ -313,7 +313,11 @@ if __name__ == "__main__":
                 combo_book = strategy.get_orderbook_levels(combo_ticker)
                 single_book = strategy.get_orderbook_levels(single_ticker)
                 
-                plan = strategy.plan_matched_pairs(combo_book, single_book, target_size=100)
+                # Dynamic target size between 1 and 10 contracts to match manual views
+                dynamic_target_size = random.randint(1, 10)
+                print(f"Targeting execution size: {dynamic_target_size} contract(s)")
+                
+                plan = strategy.plan_matched_pairs(combo_book, single_book, target_size=dynamic_target_size)
                 strategy.print_execution_summary(combo_ticker, single_ticker, plan)
                 
                 # --- SIMULTANEOUS LIVE EXECUTION TRIGGER ---
