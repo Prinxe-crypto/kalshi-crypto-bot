@@ -2,6 +2,10 @@ name: Run Kalshi Demo Bot
 
 on:
   workflow_dispatch:
+  schedule:
+    # Runs every hour on the hour (UTC time)
+    # You can adjust this schedule as needed (e.g., '*/30 * * * *' for every 30 mins)
+    - cron: '0 * * * *'
 
 jobs:
   execute-bot:
