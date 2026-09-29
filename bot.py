@@ -272,7 +272,7 @@ class ComboKStrategy:
 
 
 if __name__ == "__main__":
-    print("Initializing Kalshi Live Strategy Bot with Simultaneous Leg Execution...")
+    print("Initializing Kalshi Live Strategy Bot with Timestamp Matching...")
     bot = KalshiDemoBot(HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     strategy = ComboKStrategy(bot)
     
@@ -287,39 +287,51 @@ if __name__ == "__main__":
     if not btc_list or not eth_list:
         print("Note: No active 15-minute BTC/ETH series contracts currently open on the sandbox.")
     else:
-        target_pairs = [{"combo": btc_list[0], "single": eth_list[0]}]
-        
-        for pair in target_pairs:
-            combo_ticker = pair["combo"]
-            single_ticker = pair["single"]
-            
-            is_valid, val_msg = strategy.validate_combo_and_hedge(combo_ticker, single_ticker)
-            if not is_valid:
-                print(f"Skipping pair {combo_ticker}: {val_msg}")
-                continue
+        # Strictly match contracts sharing the exact same timestamp suffix
+        target_pairs = []
+        for btc_t in btc_list:
+            parts = btc_t.split("-")
+            if len(parts) > 1:
+                timestamp_suffix = parts[1]
+                matching_eth = next((eth_t for eth_t in eth_list if timestamp_suffix in eth_t), None)
+                if matching_eth:
+                    target_pairs.append({"combo": btc_t, "single": matching_eth})
+                    break
+
+        if not target_pairs:
+            print("Note: Found active 15m contracts, but no matching expiry timestamps found between BTC and ETH yet.")
+        else:
+            for pair in target_pairs:
+                combo_ticker = pair["combo"]
+                single_ticker = pair["single"]
                 
-            combo_book = strategy.get_orderbook_levels(combo_ticker)
-            single_book = strategy.get_orderbook_levels(single_ticker)
-            
-            plan = strategy.plan_matched_pairs(combo_book, single_book, target_size=100)
-            strategy.print_execution_summary(combo_ticker, single_ticker, plan)
-            
-            # --- SIMULTANEOUS LIVE EXECUTION TRIGGER ---
-            if plan.get("filled_size", 0) > 0:
-                print(f"\n[EXECUTION] Match found! Firing simultaneous orders to Kalshi Sandbox...")
+                is_valid, val_msg = strategy.validate_combo_and_hedge(combo_ticker, single_ticker)
+                if not is_valid:
+                    print(f"Skipping pair {combo_ticker}: {val_msg}")
+                    continue
+                    
+                combo_book = strategy.get_orderbook_levels(combo_ticker)
+                single_book = strategy.get_orderbook_levels(single_ticker)
                 
-                # Buy Combo Leg
-                combo_res = bot.place_order_v2(
-                    ticker=combo_ticker,
-                    count=plan["filled_size"],
-                    price_dollar_str=str(plan["combo_avg_price"])
-                )
-                print(f"Combo Order Response: {combo_res}")
+                plan = strategy.plan_matched_pairs(combo_book, single_book, target_size=100)
+                strategy.print_execution_summary(combo_ticker, single_ticker, plan)
                 
-                # Buy Single Leg simultaneously
-                single_res = bot.place_order_v2(
-                    ticker=single_ticker,
-                    count=plan["filled_size"],
-                    price_dollar_str=str(plan["single_avg_price"])
-                )
-                print(f"Single Leg Order Response: {single_res}")
+                # --- SIMULTANEOUS LIVE EXECUTION TRIGGER ---
+                if plan.get("filled_size", 0) > 0:
+                    print(f"\n[EXECUTION] Match found! Firing simultaneous orders to Kalshi Sandbox...")
+                    
+                    # Buy Combo Leg
+                    combo_res = bot.place_order_v2(
+                        ticker=combo_ticker,
+                        count=plan["filled_size"],
+                        price_dollar_str=str(plan["combo_avg_price"])
+                    )
+                    print(f"Combo Order Response: {combo_res}")
+                    
+                    # Buy Single Leg simultaneously
+                    single_res = bot.place_order_v2(
+                        ticker=single_ticker,
+                        count=plan["filled_size"],
+                        price_dollar_str=str(plan["single_avg_price"])
+                    )
+                    print(f"Single Leg Order Response: {single_res}")
