@@ -83,16 +83,22 @@ class KalshiHybridBot:
             # 2. Get real COMBO markets using the dedicated multivariate endpoint
             combo_response = self.get("/trade-api/v2/events/multivariate", params={"status": "open"})
             
-            # DEBUG: Print out the multivariate event tickers Kalshi gives us
-            print("\n--- DEBUG: KALSHI MULTIVARIATE EVENTS ---")
             all_events = combo_response.get("events", [])
-            for event in all_events[:10]:
-                print(f"Combo Event Ticker found: {event.get('event_ticker', 'Unknown')}")
+            
+            # DEBUG: Print out what the events are actually titled
+            print("\n--- DEBUG: KALSHI MULTIVARIATE TITLES ---")
+            for event in all_events[:5]:
+                title = event.get('title', event.get('sub_title', 'No Title'))
+                ticker = event.get('event_ticker', 'Unknown')
+                print(f"[{ticker}] -> {title}")
             print("-----------------------------------------\n")
 
             for event in all_events:
                 ticker = event.get("event_ticker", "")
-                if "BTC" in ticker and "ETH" in ticker: 
+                
+                # Check the title, subtitle, and raw string dump of the event to find BTC/ETH
+                event_string = str(event).upper()
+                if "BTC" in event_string and "ETH" in event_string: 
                     combo_tickers.append(ticker)
                     
             return combo_tickers, single_tickers
@@ -150,14 +156,14 @@ class ComboKStrategy:
 
 
 if __name__ == "__main__":
-    print("Starting bot with REAL Combo Markets, Debug Logs, and fixed $0.35/$0.55 limits...")
+    print("Starting bot with REAL Combo Markets, Advanced Scanning, and fixed $0.35/$0.55 limits...")
     bot = KalshiHybridBot(PROD_HOST, SANDBOX_HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     strategy = ComboKStrategy(bot)
     
     combo_list, single_list = bot.get_real_markets()
     
     if not combo_list or not single_list:
-        print("Waiting for exact ticker formats. Check the debug list above to see what is currently open.")
+        print("Waiting for BTC/ETH combos to open. Check the debug list above to see what is currently active.")
     else:
         combo_ticker = combo_list[0] if combo_list else ""
         single_ticker = single_list[0] if single_list else ""
