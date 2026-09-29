@@ -161,14 +161,14 @@ class ComboKStrategy:
         return True, "Passed structural validation rules."
 
     def plan_matched_pairs(self, combo_levels: pd.DataFrame, single_levels: pd.DataFrame,
-                            target_size: int = 100, combo_max_price: float = 0.35, 
-                            single_max_price: float = 0.55, combined_cap: float = 0.85):
+                            target_size: int = 100, combo_max_price: float = 0.40, 
+                            single_max_price: float = 0.60, combined_cap: float = 0.90):
         
         valid_combo = combo_levels[combo_levels["price"] <= combo_max_price].copy()
         valid_single = single_levels[single_levels["price"] <= single_max_price].copy()
 
         if valid_combo.empty or valid_single.empty:
-            reason = "Rejected: Book levels exceeded individual price ceilings ($0.35 combo / $0.55 single)."
+            reason = "Rejected: Book levels outside 50/50 pricing and combo mispricing thresholds."
             self.trades_rejected += 1
             self.rejection_reasons.append(reason)
             return {"filled_size": 0, "reason": reason}
@@ -184,7 +184,7 @@ class ComboKStrategy:
 
         max_matchable = min(len(combo_ladder), len(single_ladder))
         if max_matchable == 0:
-            reason = "Rejected: Zero overlapping matchable depth between legs."
+            reason = "Rejected: Zero overlapping matchable depth."
             self.trades_rejected += 1
             self.rejection_reasons.append(reason)
             return {"filled_size": 0, "reason": reason}
@@ -272,7 +272,7 @@ class ComboKStrategy:
 
 
 if __name__ == "__main__":
-    print("Initializing Kalshi Live Strategy Bot with Series Ticker Discovery...")
+    print("Initializing Kalshi Live Strategy Bot with Simultaneous Leg Execution...")
     bot = KalshiDemoBot(HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     strategy = ComboKStrategy(bot)
     
@@ -280,7 +280,7 @@ if __name__ == "__main__":
     balance_response = bot.get_balance()
     print(f"Account Balance: ${balance_response.get('balance_dollars', '0.00')}")
     
-    # 2. Dynamically fetch active 15m markets by series code
+    # 2. Discover active 15m contracts
     print("\nScanning active 15-minute BTC and ETH series contracts...")
     btc_list, eth_list = bot.get_active_crypto_15m_markets()
     
@@ -303,3 +303,23 @@ if __name__ == "__main__":
             
             plan = strategy.plan_matched_pairs(combo_book, single_book, target_size=100)
             strategy.print_execution_summary(combo_ticker, single_ticker, plan)
+            
+            # --- SIMULTANEOUS LIVE EXECUTION TRIGGER ---
+            if plan.get("filled_size", 0) > 0:
+                print(f"\n[EXECUTION] Match found! Firing simultaneous orders to Kalshi Sandbox...")
+                
+                # Buy Combo Leg
+                combo_res = bot.place_order_v2(
+                    ticker=combo_ticker,
+                    count=plan["filled_size"],
+                    price_dollar_str=str(plan["combo_avg_price"])
+                )
+                print(f"Combo Order Response: {combo_res}")
+                
+                # Buy Single Leg simultaneously
+                single_res = bot.place_order_v2(
+                    ticker=single_ticker,
+                    count=plan["filled_size"],
+                    price_dollar_str=str(plan["single_avg_price"])
+                )
+                print(f"Single Leg Order Response: {single_res}")
