@@ -66,7 +66,6 @@ class KalshiDemoBot:
         return self.get("/trade-api/v2/portfolio/balance")
 
     def get_active_crypto_15m_markets(self):
-        """Directly queries active 15-minute series for BTC and ETH."""
         try:
             btc_tickers = []
             eth_tickers = []
@@ -165,6 +164,10 @@ class ComboKStrategy:
                             target_size: int = 5, combo_max_price: float = 0.40, 
                             single_max_price: float = 0.60, combined_cap: float = 0.90):
         
+        # DEBUG: Print out what prices are in the books
+        print(f"\n[DEBUG] Combo Book Levels:\n{combo_levels}")
+        print(f"[DEBUG] Single Book Levels:\n{single_levels}")
+
         valid_combo = combo_levels[combo_levels["price"] <= combo_max_price].copy()
         valid_single = single_levels[single_levels["price"] <= single_max_price].copy()
 
@@ -273,16 +276,13 @@ class ComboKStrategy:
 
 
 if __name__ == "__main__":
-    print("Initializing Kalshi Live Strategy Bot with 1-10 Contract Sizing...")
+    print("Initializing Kalshi Live Strategy Bot with Debug Logging...")
     bot = KalshiDemoBot(HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     strategy = ComboKStrategy(bot)
     
-    # 1. Check Balance
     balance_response = bot.get_balance()
     print(f"Account Balance: ${balance_response.get('balance_dollars', '0.00')}")
     
-    # 2. Discover active 15m contracts
-    print("\nScanning active 15-minute BTC and ETH series contracts...")
     btc_list, eth_list = bot.get_active_crypto_15m_markets()
     
     if not btc_list or not eth_list:
@@ -313,18 +313,14 @@ if __name__ == "__main__":
                 combo_book = strategy.get_orderbook_levels(combo_ticker)
                 single_book = strategy.get_orderbook_levels(single_ticker)
                 
-                # Dynamic target size between 1 and 10 contracts to match manual views
-                dynamic_target_size = random.randint(1, 10)
+                dynamic_target_size = random.randint(1, 5)
                 print(f"Targeting execution size: {dynamic_target_size} contract(s)")
                 
                 plan = strategy.plan_matched_pairs(combo_book, single_book, target_size=dynamic_target_size)
                 strategy.print_execution_summary(combo_ticker, single_ticker, plan)
                 
-                # --- SIMULTANEOUS LIVE EXECUTION TRIGGER ---
                 if plan.get("filled_size", 0) > 0:
                     print(f"\n[EXECUTION] Match found! Firing simultaneous orders to Kalshi Sandbox...")
-                    
-                    # Buy Combo Leg
                     combo_res = bot.place_order_v2(
                         ticker=combo_ticker,
                         count=plan["filled_size"],
@@ -332,7 +328,6 @@ if __name__ == "__main__":
                     )
                     print(f"Combo Order Response: {combo_res}")
                     
-                    # Buy Single Leg simultaneously
                     single_res = bot.place_order_v2(
                         ticker=single_ticker,
                         count=plan["filled_size"],
