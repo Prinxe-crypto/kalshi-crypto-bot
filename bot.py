@@ -53,29 +53,20 @@ class KalshiDemoBot:
         url = self.host + path
         headers = self._get_signed_headers("GET", path)
         response = requests.get(url, headers=headers, params=params)
-        try:
-            return response.json()
-        except Exception:
-            return {"raw_text": response.text}
+        return response.json()
 
     def post(self, path, payload):
         url = self.host + path
         headers = self._get_signed_headers("POST", path)
         response = requests.post(url, headers=headers, data=json.dumps(payload))
-        try:
-            return response.json()
-        except Exception:
-            return {"raw_text": response.text}
+        return response.json()
 
     def get_balance(self):
         return self.get("/trade-api/v2/portfolio/balance")
 
-    def get_crypto_markets(self):
-        return self.get("/trade-api/v2/markets", params={"series_ticker": "KXBTCD", "status": "open", "limit": 5})
-
     def place_order_v2(self, ticker, count, price_dollar_str, exchange_index=2):
         path = "/trade-api/v2/portfolio/events/orders"
-        client_order_id = f"combo-k-bot-{int(time.time() * 1000)}"
+        client_order_id = f"demo-bot-combo-{int(time.time() * 1000)}"
         
         payload = {
             "ticker": ticker,
@@ -90,33 +81,20 @@ class KalshiDemoBot:
             "self_trade_prevention_type": "taker_at_cross"
         }
         
-        print(f"Submitting Combo-K Order: BUY {count}x {ticker} at ${price_dollar_str} on Shard {exchange_index}")
+        print(f"Submitting Order: BUY {count}x {ticker} at ${price_dollar_str} on Shard {exchange_index}")
         return self.post(path, payload)
-
-    def get_portfolio_orders(self, status="resting"):
-        path = "/trade-api/v2/portfolio/orders"
-        return self.get(path, params={"status": status})
 
 
 class ComboKStrategy:
-    """Core Combo-K Vectorized Pricing & Execution Engine[span_5](start_span)[span_5](end_span)."""
     def __init__(self, bot):
         self.bot = bot
 
     def discover_combo_collections(self):
-        """Attempts to discover multivariate event collections."""
+        """Attempts to list multivariate (combo) event collections."""
         return self.bot.get("/trade-api/v2/multivariate_event_collections")
 
-    def discover_combo_events(self, collection_ticker=None, series_ticker=None):
-        params = {}
-        if collection_ticker:
-            params["collection_ticker"] = collection_ticker
-        if series_ticker:
-            params["series_ticker"] = series_ticker
-        return self.bot.get("/trade-api/v2/events/multivariate", params=params)
-
     def get_orderbook_levels(self, market_ticker, side="yes"):
-        """Fetches the orderbook and maps opposing bids into clean buy prices[span_6](start_span)[span_6](end_span)."""
+        """Fetches order book levels and adjusts for buying yes via opposite bids."""
         book = self.bot.get(f"/trade-api/v2/markets/{market_ticker}/orderbook")
         ob = book.get("orderbook", book.get("orderbook_fp", {}))
 
@@ -133,7 +111,7 @@ class ComboKStrategy:
 
     def plan_matched_pairs(self, combo_levels: pd.DataFrame, single_levels: pd.DataFrame,
                             target_size: int, combined_cap: float = 0.85):
-        """Vectorized price walk enforcing the combined cost ceiling[span_7](start_span)[span_7](end_span)."""
+        """Vectorized price-walking engine enforcing the combined $0.85 cap."""
         def expand_ladder(levels, n):
             if levels.empty:
                 return pd.Series(dtype=float)
@@ -179,30 +157,27 @@ class ComboKStrategy:
         }
 
     def dry_run(self, combo_ticker, single_ticker, target_size, combined_cap=0.85):
-        """Executes a non-destructive dry-run simulation of the pricing plan[span_8](start_span)[span_8](end_span)."""
         combo_levels = self.get_orderbook_levels(combo_ticker, side="yes")
         single_levels = self.get_orderbook_levels(single_ticker, side="yes")
 
         plan = self.plan_matched_pairs(combo_levels, single_levels, target_size, combined_cap)
 
         print("=" * 60)
-        print(f"COMBO-K DRY RUN — Target Size: {target_size}, Combined Cap: ${combined_cap}")
+        print(f"DRY RUN — target size {target_size}, combined cap ${combined_cap}")
         print("=" * 60)
-        print(f"• Combo book liquidity depth available  : {combo_levels['size'].sum() if not combo_levels.empty else 0}")
-        print(f"• Single book liquidity depth available : {single_levels['size'].sum() if not single_levels.empty else 0}")
-        print(f"• Fillable matched-pair size            : {plan['filled_size']}")
-        
+        print(f"Combo book depth available: {combo_levels['size'].sum() if not combo_levels.empty else 0}")
+        print(f"Single book depth available: {single_levels['size'].sum() if not single_levels.empty else 0}")
+        print(f"\nFilled matched-pair size: {plan['filled_size']}")
         if plan["filled_size"] > 0:
-            print(f"• Combo average execution price         : ${plan['combo_avg_price']}")
-            print(f"• Single average execution price        : ${plan['single_avg_price']}")
-            print(f"• Combined average price                : ${plan['combined_avg_price']} (Cap: ${combined_cap})")
+            print(f"Combo avg price:    ${plan['combo_avg_price']}")
+            print(f"Single avg price:   ${plan['single_avg_price']}")
+            print(f"Combined avg price: ${plan['combined_avg_price']}  (cap ${combined_cap})")
         else:
-            print("❌ No fillable size within cap — trade would be REJECTED, no orders placed.")
+            print("No fillable size within cap — trade would be REJECTED, no orders placed.")
 
         return plan
 
     def execute_matched_pairs(self, combo_ticker, single_ticker, plan, dry_run_only=True):
-        """Dispatches live orders only if dry_run_only is explicitly set to False[span_9](start_span)[span_9](end_span)."""
         if plan["filled_size"] == 0:
             print("Nothing to execute — plan had zero fillable size.")
             return None
@@ -211,9 +186,9 @@ class ComboKStrategy:
         combo_price = plan["combo_avg_price"]
         single_price = plan["single_avg_price"]
 
-        print(f"\n{'[DRY RUN MODE] ' if dry_run_only else '[LIVE EXECUTION] '}" + "Order Plan:")
-        print(f"  - BUY {size}x {combo_ticker} @ ~${combo_price}")
-        print(f"  - BUY {size}x {single_ticker} @ ~${single_price}")
+        print(f"{'[DRY RUN] ' if dry_run_only else ''}Would place:")
+        print(f"  BUY {size}x {combo_ticker} @ ~${combo_price} (combo leg)")
+        print(f"  BUY {size}x {single_ticker} @ ~${single_price} (single leg)")
 
         if dry_run_only:
             return {"status": "dry_run_only", "plan": plan}
@@ -224,41 +199,15 @@ class ComboKStrategy:
 
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("🚀 INITIALIZING COMBO-K STRATEGY BOT")
-    print("=" * 60)
-    
+    print("Initializing Kalshi Demo Bot with Combo Strategy...")
     bot = KalshiDemoBot(HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     strategy = ComboKStrategy(bot)
     
-    # 1. Check Portfolio Balance
+    # 1. Check Balance
     balance_response = bot.get_balance()
     print(f"Account Balance: ${balance_response.get('balance_dollars', '0.00')}")
     
-    # 2. Diagnostic Combo Collection Discovery check
-    print("\n--- Diagnostic: Discovering Combo Collections ---")
+    # 2. Run Diagnostic Combo Discovery (Step 1 from addon)
+    print("\nDiscovering multivariate combo collections...")
     collections = strategy.discover_combo_collections()
-    print(json.dumps(collections, indent=2))
-    
-    # 3. Fetch Single Crypto Markets to verify baseline connectivity
-    markets_response = bot.get_crypto_markets()
-    markets = markets_response.get("markets", [])
-    
-    if markets:
-        target_market = markets[0]
-        single_ticker = target_market.get("ticker")
-        print(f"\nFound sample single crypto ticker: {single_ticker}")
-        
-        # Run a safe dry-run test using dummy or discovered combo ticker format
-        # (Replace dummy combo ticker once discovery output returns real collection formats)
-        sample_combo_ticker = f"{single_ticker}-COMBO-TEST"
-        
-        plan = strategy.dry_run(
-            combo_ticker=sample_combo_ticker,
-            single_ticker=single_ticker,
-            target_size=10,
-            combined_cap=0.85
-        )
-        
-        # Execute in dry-run mode safely by default
-        strategy.execute_matched_pairs(sample_combo_ticker, single_ticker, plan, dry_run_only=True)
+    print("Collections Response:", json.dumps(collections, indent=2))
