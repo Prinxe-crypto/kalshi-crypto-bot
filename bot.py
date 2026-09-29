@@ -80,16 +80,24 @@ class KalshiHybridBot:
             for m in btc_response.get("markets", []):
                 single_tickers.append(m.get("ticker", ""))
                 
-            # 2. Get real COMBO markets (Multivariate / correlated events)
-            # Kalshi stores combo pairs under different series or multivariate collections
+            # 2. Get real COMBO markets
             combo_response = self.get("/trade-api/v2/events", params={"status": "open"})
-            for event in combo_response.get("events", []):
+            
+            # DEBUG: Print out the first 10 event tickers Kalshi gives us
+            print("\n--- DEBUG: WHAT KALSHI CALLS THEIR EVENTS ---")
+            all_events = combo_response.get("events", [])
+            for event in all_events[:10]:
+                print(f"Event Ticker found: {event.get('event_ticker', 'Unknown')}")
+            print("---------------------------------------------\n")
+
+            for event in all_events:
                 ticker = event.get("event_ticker", "")
-                if "BTC" in ticker and "ETH" in ticker: # Identifies a true paired combo event
+                if "BTC" in ticker and "ETH" in ticker: 
                     combo_tickers.append(ticker)
                     
             return combo_tickers, single_tickers
-        except Exception:
+        except Exception as e:
+            print(f"API Error: {e}")
             return [], []
 
 
@@ -123,7 +131,7 @@ class ComboKStrategy:
         valid_single = single_book[single_book["price"] <= single_max].copy()
 
         if valid_combo.empty or valid_single.empty:
-            return {"filled_size": 0, "reason": "Prices are higher than $0.35 (combo) or $0.55 (single)."}
+            return {"filled_size": 0, "reason": "Prices are higher than $0.35 (combo) or $0.55 (single), or book is empty."}
 
         combo_price = valid_combo.iloc[0]["price"]
         single_price = valid_single.iloc[0]["price"]
@@ -137,25 +145,24 @@ class ComboKStrategy:
             "combo_price": combo_price,
             "single_price": single_price,
             "total_cost": total_cost,
-            "profit_buffer": round(combined_cap - total_cost, 4) # Real math based on actual entry
+            "profit_buffer": round(combined_cap - total_cost, 4) 
         }
 
 
 if __name__ == "__main__":
-    print("Starting bot with REAL Combo Markets and fixed $0.35/$0.55 limits...")
+    print("Starting bot with REAL Combo Markets, Debug Logs, and fixed $0.35/$0.55 limits...")
     bot = KalshiHybridBot(PROD_HOST, SANDBOX_HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     strategy = ComboKStrategy(bot)
     
     combo_list, single_list = bot.get_real_markets()
     
     if not combo_list or not single_list:
-        print("No active markets found right now.")
+        print("Waiting for exact ticker formats. Check the debug list above to see what is currently open.")
     else:
-        # Just grab the first available pair for testing
         combo_ticker = combo_list[0] if combo_list else ""
         single_ticker = single_list[0] if single_list else ""
         
-        print(f"Checking Real Combo: {combo_ticker}")
+        print(f"\nChecking Real Combo: {combo_ticker}")
         print(f"Checking Single Leg: {single_ticker}")
             
         combo_book = strategy.get_orderbook(combo_ticker)
