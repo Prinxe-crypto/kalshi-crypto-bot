@@ -65,28 +65,25 @@ class KalshiDemoBot:
         return self.get("/trade-api/v2/portfolio/balance")
 
     def get_active_crypto_15m_markets(self):
-        """Dynamically queries active 15-minute crypto markets for BTC and ETH."""
+        """Directly queries active 15-minute series for BTC and ETH."""
         try:
-            response = self.get("/trade-api/v2/markets", params={"status": "open", "limit": 100})
-            markets = response.get("markets", [])
-            
             btc_tickers = []
             eth_tickers = []
             
-            for m in markets:
-                ticker = m.get("ticker", "")
-                series = m.get("series_ticker", "").upper()
-                title = m.get("title", "").upper()
+            for series_code in ["KXBTC15M", "KXETH15M"]:
+                response = self.get("/trade-api/v2/markets", params={"series_ticker": series_code, "status": "open"})
+                markets = response.get("markets", [])
                 
-                if "15M" in series or "15M" in ticker or "15-MIN" in title:
-                    if "BTC" in ticker or "BITCOIN" in title:
+                for m in markets:
+                    ticker = m.get("ticker", "")
+                    if "BTC" in series_code:
                         btc_tickers.append(ticker)
-                    elif "ETH" in ticker or "ETHEREUM" in title:
+                    elif "ETH" in series_code:
                         eth_tickers.append(ticker)
-            
+                        
             return btc_tickers, eth_tickers
         except Exception as e:
-            print(f"Error fetching active 15m markets: {e}")
+            print(f"Error fetching active 15m markets by series: {e}")
             return [], []
 
     def place_order_v2(self, ticker, count, price_dollar_str, exchange_index=2):
@@ -275,7 +272,7 @@ class ComboKStrategy:
 
 
 if __name__ == "__main__":
-    print("Initializing Kalshi Live Strategy Bot with Dynamic 15m Discovery...")
+    print("Initializing Kalshi Live Strategy Bot with Series Ticker Discovery...")
     bot = KalshiDemoBot(HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     strategy = ComboKStrategy(bot)
     
@@ -283,12 +280,12 @@ if __name__ == "__main__":
     balance_response = bot.get_balance()
     print(f"Account Balance: ${balance_response.get('balance_dollars', '0.00')}")
     
-    # 2. Dynamically fetch active 15m BTC and ETH markets
-    print("\nScanning active 15-minute BTC and ETH markets...")
+    # 2. Dynamically fetch active 15m markets by series code
+    print("\nScanning active 15-minute BTC and ETH series contracts...")
     btc_list, eth_list = bot.get_active_crypto_15m_markets()
     
     if not btc_list or not eth_list:
-        print("Note: No active 15-minute BTC/ETH contracts returned from sandbox exchange right now.")
+        print("Note: No active 15-minute BTC/ETH series contracts currently open on the sandbox.")
     else:
         target_pairs = [{"combo": btc_list[0], "single": eth_list[0]}]
         
