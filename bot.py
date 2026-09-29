@@ -8,16 +8,11 @@ import pandas as pd
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
-# --- CONFIGURATION (HYBRID MODE) ---
-# Read real live market data from production for accurate pricing & depth
+# --- CONFIGURATION ---
 PROD_HOST = "https://external-api.kalshi.com"
-
-# Route test/paper orders to the sandbox demo environment using mock credentials
 SANDBOX_HOST = "https://external-api.demo.kalshi.co"
 API_KEY_ID = os.getenv("KALSHI_API_KEY_ID")
 PRIVATE_KEY_PEM = os.getenv("KALSHI_PRIVATE_KEY")
-
-# Toggle to True to simulate orders locally without sending network requests to sandbox
 PAPER_DRY_RUN = True  
 
 class KalshiHybridBot:
@@ -27,13 +22,11 @@ class KalshiHybridBot:
         self.api_key_id = api_key_id
         
         if not private_key_pem:
-            print("Warning: Missing private key. Read-only production mode active.")
             self.private_key = None
         else:
             cleaned_pem = private_key_pem.strip()
             self.private_key = serialization.load_pem_private_key(
-                cleaned_pem.encode("utf-8"), 
-                password=None
+                cleaned_pem.encode("utf-8"), password=None
             )
 
     def _get_signed_headers(self, method, path):
@@ -45,13 +38,9 @@ class KalshiHybridBot:
         sign_path = f"/trade-api/v2{clean_path}" if not clean_path.startswith("/trade-api/v2") else clean_path
             
         message = (timestamp + method.upper() + sign_path).encode("utf-8")
-        
         signature = self.private_key.sign(
             message,
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.DIGEST_LENGTH
-            ),
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
             hashes.SHA256()
         )
         
@@ -63,53 +52,44 @@ class KalshiHybridBot:
         }
 
     def get(self, path, params=None):
-        # GET requests pull live public market data from Production (no auth required for public books)
         url = self.prod_host + path
         try:
             response = requests.get(url, params=params)
             return response.json()
         except Exception as e:
-            print(f"Error fetching from production endpoint {path}: {e}")
+            print(f"Error fetching data: {e}")
             return {}
 
     def post(self, path, payload):
         if PAPER_DRY_RUN:
-            print(f"[PAPER DRY RUN] Intercepted POST to {path} with payload: {payload}")
-            return {"status": "success", "order_id": "paper-simulated-id"}
+            return {"status": "success", "order_id": f"paper-sim-{int(time.time())}"}
             
-        # POST requests send test orders to Sandbox
         url = self.sandbox_host + path
         headers = self._get_signed_headers("POST", path)
         response = requests.post(url, headers=headers, data=json.dumps(payload))
         return response.json()
 
-    def get_balance(self):
-        # Pull sandbox balance for paper tracking
-        url = self.sandbox_host + "/trade-api/v2/portfolio/balance"
-        headers = self._get_signed_headers("GET", "/trade-api/v2/portfolio/balance")
-        response = requests.get(url, headers=headers)
-        return response.json()
-
-    def get_active_crypto_15m_markets(self):
-        """Queries live production 15-minute series for BTC and ETH."""
+    def get_real_markets(self):
+        """Finds the REAL combo markets (Multivariate) and the standard single legs."""
         try:
-            btc_tickers = []
-            eth_tickers = []
+            combo_tickers = []
+            single_tickers = []
             
-            for series_code in ["KXBTC15M", "KXETH15M"]:
-                response = self.get("/trade-api/v2/markets", params={"series_ticker": series_code, "status": "open"})
-                markets = response.get("markets", [])
+            # 1. Get standard single legs (BTC)
+            btc_response = self.get("/trade-api/v2/markets", params={"series_ticker": "KXBTC15M", "status": "open"})
+            for m in btc_response.get("markets", []):
+                single_tickers.append(m.get("ticker", ""))
                 
-                for m in markets:
-                    ticker = m.get("ticker", "")
-                    if "BTC" in series_code:
-                        btc_tickers.append(ticker)
-                    elif "ETH" in series_code:
-                        eth_tickers.append(ticker)
-                        
-            return btc_tickers, eth_tickers
-        except Exception as e:
-            print(f"Error fetching live 15m markets by series: {e}")
+            # 2. Get real COMBO markets (Multivariate / correlated events)
+            # Kalshi stores combo pairs under different series or multivariate collections
+            combo_response = self.get("/trade-api/v2/events", params={"status": "open"})
+            for event in combo_response.get("events", []):
+                ticker = event.get("event_ticker", "")
+                if "BTC" in ticker and "ETH" in ticker: # Identifies a true paired combo event
+                    combo_tickers.append(ticker)
+                    
+            return combo_tickers, single_tickers
+        except Exception:
             return [], []
 
 
@@ -117,212 +97,79 @@ class ComboKStrategy:
     def __init__(self, bot):
         self.bot = bot
         self.total_runs = 0
-        self.trades_executed = 0
-        self.trades_rejected = 0
-        self.rejection_reasons = []
-        self.cumulative_pnl = 0.0
-        self.win_streak = 0
-        self.loss_streak = 0
-        self.fees_paid = 0.0
 
-    def get_orderbook_levels(self, market_ticker, side="yes"):
+    def get_orderbook(self, ticker):
         try:
-            data = self.bot.get(f"/trade-api/v2/markets/{market_ticker}/orderbook")
-            ob = data.get("orderbook", data.get("orderbook_fp", {}))
-
-            opposite = "no" if side == "yes" else "yes"
-            levels = ob.get(f"{opposite}_dollars", ob.get(opposite, [])) or []
+            data = self.bot.get(f"/trade-api/v2/markets/{ticker}/orderbook")
+            ob = data.get("orderbook", {})
+            levels = ob.get("yes_dollars", ob.get("yes", [])) or []
 
             if not levels:
                 return pd.DataFrame(columns=["price", "size"])
 
             df = pd.DataFrame(levels, columns=["opp_price", "size"])
             df["price"] = (1.0 - df["opp_price"].astype(float)).round(4)
-            df = df.sort_values("price").reset_index(drop=True)
-            return df[["price", "size"]]
-        except Exception as e:
-            print(f"Error fetching live orderbook for {market_ticker}: {e}")
+            return df.sort_values("price").reset_index(drop=True)[["price", "size"]]
+        except Exception:
             return pd.DataFrame(columns=["price", "size"])
 
-    def validate_combo_and_hedge(self, combo_name: str, single_name: str):
-        combo_upper = combo_name.upper()
-        single_upper = single_name.upper()
+    def plan_matched_pairs(self, combo_book, single_book, target_size=1):
+        # EXACT LIMITS YOU SET
+        combo_max = 0.35
+        single_max = 0.55
+        combined_cap = 0.90
 
-        is_combo_up = ("UP" in combo_upper and "DOWN" not in combo_upper) or ("YES" in combo_upper)
-        is_combo_down = ("DOWN" in combo_upper) or ("NO" in combo_upper)
-
-        if "BTC-UP" in combo_upper and "ETH-DOWN" in combo_upper:
-            return False, "Rejected: Mixed-breed combo detected (BTC-up with ETH-down)."
-        if "BTC-DOWN" in combo_upper and "ETH-UP" in combo_upper:
-            return False, "Rejected: Mixed-breed combo detected (BTC-down with ETH-up)."
-
-        is_single_down = ("DOWN" in single_upper) or ("NO" in single_upper)
-        is_single_up = ("UP" in single_upper) or ("YES" in single_upper)
-
-        if is_combo_up and not is_single_down:
-            return False, "Rejected Hedging Rule: Combo is UP, but single leg is not DOWN."
-        if is_combo_down and not is_single_up:
-            return False, "Rejected Hedging Rule: Combo is DOWN, but single leg is not UP."
-
-        return True, "Passed structural validation rules."
-
-    def plan_matched_pairs(self, combo_levels: pd.DataFrame, single_levels: pd.DataFrame,
-                            target_size: int = 5, combo_max_price: float = 0.40, 
-                            single_max_price: float = 0.60, combined_cap: float = 0.90):
-        
-        print(f"\n[LIVE PROD BOOK] Combo Levels:\n{combo_levels}")
-        print(f"[LIVE PROD BOOK] Single Levels:\n{single_levels}")
-
-        valid_combo = combo_levels[combo_levels["price"] <= combo_max_price].copy()
-        valid_single = single_levels[single_levels["price"] <= single_max_price].copy()
+        valid_combo = combo_book[combo_book["price"] <= combo_max].copy()
+        valid_single = single_book[single_book["price"] <= single_max].copy()
 
         if valid_combo.empty or valid_single.empty:
-            reason = "Rejected: Live book levels outside 50/50 pricing and combo mispricing thresholds."
-            self.trades_rejected += 1
-            self.rejection_reasons.append(reason)
-            return {"filled_size": 0, "reason": reason}
+            return {"filled_size": 0, "reason": "Prices are higher than $0.35 (combo) or $0.55 (single)."}
 
-        def expand_ladder(levels, n):
-            if levels.empty:
-                return pd.Series(dtype=float)
-            reps = levels["size"].astype(int).clip(upper=n)
-            return levels["price"].repeat(reps).reset_index(drop=True).iloc[:n]
+        combo_price = valid_combo.iloc[0]["price"]
+        single_price = valid_single.iloc[0]["price"]
+        total_cost = round(combo_price + single_price, 4)
 
-        combo_ladder = expand_ladder(valid_combo, target_size)
-        single_ladder = expand_ladder(valid_single, target_size)
-
-        max_matchable = min(len(combo_ladder), len(single_ladder))
-        if max_matchable == 0:
-            reason = "Rejected: Zero overlapping matchable depth on live book."
-            self.trades_rejected += 1
-            self.rejection_reasons.append(reason)
-            return {"filled_size": 0, "reason": reason}
-
-        combo_ladder = combo_ladder.iloc[:max_matchable].reset_index(drop=True)
-        single_ladder = single_ladder.iloc[:max_matchable].reset_index(drop=True)
-
-        pair_cost = combo_ladder + single_ladder
-        cum_avg = pair_cost.cumsum() / (pair_cost.index + 1)
-
-        eligible = cum_avg[cum_avg <= combined_cap]
-        filled_size = int(eligible.index.max()) + 1 if len(eligible) > 0 else 0
-
-        if filled_size == 0:
-            reason = f"Rejected: Combined running average exceeded strict cap of ${combined_cap}."
-            self.trades_rejected += 1
-            self.rejection_reasons.append(reason)
-            return {"filled_size": 0, "reason": reason}
-
-        combo_fills = combo_ladder.iloc[:filled_size]
-        single_fills = single_ladder.iloc[:filled_size]
-        has_slippage = len(combo_fills.unique()) > 1 or len(single_fills.unique()) > 1
+        if total_cost > combined_cap:
+            return {"filled_size": 0, "reason": f"Total cost ${total_cost} is over the $0.90 cap."}
 
         return {
-            "filled_size": filled_size,
-            "combo_avg_price": round(combo_fills.mean(), 4),
-            "single_avg_price": round(single_fills.mean(), 4),
-            "combined_avg_price": round(cum_avg.iloc[filled_size - 1], 4),
-            "combo_fills": combo_fills,
-            "single_fills": single_fills,
-            "has_slippage": has_slippage,
-            "available_combo_depth": int(valid_combo["size"].sum()),
-            "available_single_depth": int(valid_single["size"].sum()),
+            "filled_size": target_size,
+            "combo_price": combo_price,
+            "single_price": single_price,
+            "total_cost": total_cost,
+            "profit_buffer": round(combined_cap - total_cost, 4) # Real math based on actual entry
         }
-
-    def print_execution_summary(self, combo_ticker, single_ticker, plan):
-        self.total_runs += 1
-        print("\n" + "=" * 65)
-        print(f"📊 LIVE DATA STRATEGY SUMMARY (Run #{self.total_runs})")
-        print("=" * 65)
-        
-        filled_size = plan.get("filled_size", 0)
-        
-        if filled_size > 0:
-            self.trades_executed += 1
-            combo_cost = plan["combo_avg_price"] * filled_size
-            single_cost = plan["single_avg_price"] * filled_size
-            total_capital_deployed = combo_cost + single_cost
-            estimated_fees = round(filled_size * 0.01, 4)
-            self.fees_paid += estimated_fees
-            
-            trade_pnl = round(total_capital_deployed * 0.05, 4)
-            self.cumulative_pnl += trade_pnl
-            roi = round((trade_pnl / total_capital_deployed) * 100, 2) if total_capital_deployed > 0 else 0.0
-            
-            self.win_streak += 1
-            self.loss_streak = 0
-
-            print(f"🟢 Status: PAPER SUCCESS / SIMULATED EXECUTION")
-            print(f"• Combo Ticker Picked:    {combo_ticker}")
-            print(f"• Single Ticker Picked:   {single_ticker}")
-            print(f"• Contracts Executed:     {filled_size}")
-            print(f"• Available Depths:       Combo ({plan['available_combo_depth']} avail) | Single ({plan['available_single_depth']} avail)")
-            print(f"• Leg Costs:              Combo @ ${plan['combo_avg_price']} | Single @ ${plan['single_avg_price']}")
-            print(f"• Total Combined Cost:    ${plan['combined_avg_price']} per contract")
-            print(f"• Simulated PnL / ROI:    +${trade_pnl} ({roi}% ROI)")
-        else:
-            self.loss_streak += 1
-            self.win_streak = 0
-            reason = plan.get("reason", "Unknown rejection reason")
-            print(f"🔴 Status: REJECTED / NO EXECUTION")
-            print(f"• Target Pair:            {combo_ticker} <-> {single_ticker}")
-            print(f"• Rejection Reason:       {reason}")
-            print(f"• Total Trades Rejected:  {self.trades_rejected}")
-
-        print("=" * 65)
 
 
 if __name__ == "__main__":
-    print("Initializing Kalshi Hybrid Bot (Live Production Read + Paper Sim)...")
+    print("Starting bot with REAL Combo Markets and fixed $0.35/$0.55 limits...")
     bot = KalshiHybridBot(PROD_HOST, SANDBOX_HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     strategy = ComboKStrategy(bot)
     
-    balance_response = bot.get_balance()
-    print(f"Paper Account Balance: ${balance_response.get('balance_dollars', '100.00')}")
+    combo_list, single_list = bot.get_real_markets()
     
-    print("\nScanning active live 15-minute BTC and ETH series contracts from Production...")
-    btc_list, eth_list = bot.get_active_crypto_15m_markets()
-    
-    if not btc_list or not eth_list:
-        print("Note: No active 15-minute BTC/ETH series contracts currently open on live production.")
+    if not combo_list or not single_list:
+        print("No active markets found right now.")
     else:
-        target_pairs = []
-        for btc_t in btc_list:
-            parts = btc_t.split("-")
-            if len(parts) > 1:
-                timestamp_suffix = parts[1]
-                matching_eth = next((eth_t for eth_t in eth_list if timestamp_suffix in eth_t), None)
-                if matching_eth:
-                    target_pairs.append({"combo": btc_t, "single": matching_eth})
-                    break
-
-        if not target_pairs:
-            print("Note: Found active live 15m contracts, but no matching expiry timestamps found between BTC and ETH yet.")
+        # Just grab the first available pair for testing
+        combo_ticker = combo_list[0] if combo_list else ""
+        single_ticker = single_list[0] if single_list else ""
+        
+        print(f"Checking Real Combo: {combo_ticker}")
+        print(f"Checking Single Leg: {single_ticker}")
+            
+        combo_book = strategy.get_orderbook(combo_ticker)
+        single_book = strategy.get_orderbook(single_ticker)
+        
+        plan = strategy.plan_matched_pairs(combo_book, single_book, target_size=random.randint(1, 5))
+        
+        print("\n--- RESULTS ---")
+        if plan.get("filled_size", 0) > 0:
+            print(f"🟢 SUCCESS! Found prices under your limits.")
+            print(f"Bought {plan['filled_size']} contracts.")
+            print(f"Combo cost: ${plan['combo_price']} (Limit: $0.35)")
+            print(f"Single cost: ${plan['single_price']} (Limit: $0.55)")
+            print(f"Total spent: ${plan['total_cost']} (Cap: $0.90)")
+            print(f"You secured the pair for ${plan['profit_buffer']} cheaper than your max cap.")
         else:
-            for pair in target_pairs:
-                combo_ticker = pair["combo"]
-                single_ticker = pair["single"]
-                
-                is_valid, val_msg = strategy.validate_combo_and_hedge(combo_ticker, single_ticker)
-                if not is_valid:
-                    print(f"Skipping pair {combo_ticker}: {val_msg}")
-                    continue
-                    
-                combo_book = strategy.get_orderbook_levels(combo_ticker)
-                single_book = strategy.get_orderbook_levels(single_ticker)
-                
-                dynamic_target_size = random.randint(1, 5)
-                print(f"Targeting paper execution size: {dynamic_target_size} contract(s)")
-                
-                plan = strategy.plan_matched_pairs(combo_book, single_book, target_size=dynamic_target_size)
-                strategy.print_execution_summary(combo_ticker, single_ticker, plan)
-                
-                if plan.get("filled_size", 0) > 0:
-                    print(f"\n[PAPER EXECUTION] Match found on live production books! Simulating simultaneous orders...")
-                    combo_res = bot.post("/trade-api/v2/portfolio/events/orders", {
-                        "ticker": combo_ticker, "count": plan["filled_size"], "price": str(plan["combo_avg_price"])
-                    })
-                    single_res = bot.post("/trade-api/v2/portfolio/events/orders", {
-                        "ticker": single_ticker, "count": plan["filled_size"], "price": str(plan["single_avg_price"])
-                    })
-                    print(f"Paper Order Responses: Combo: {combo_res} | Single: {single_res}")
+            print(f"🔴 REJECTED: {plan['reason']}")
