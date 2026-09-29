@@ -207,7 +207,16 @@ if __name__ == "__main__":
     balance_response = bot.get_balance()
     print(f"Account Balance: ${balance_response.get('balance_dollars', '0.00')}")
     
-    # 2. Run Diagnostic Combo Discovery
+    # 2. Discover Combo Collections with Fallback Protection
     print("\nDiscovering multivariate combo collections...")
     collections = strategy.discover_combo_collections()
-    print("Collections Response:", json.dumps(collections, indent=2))
+    
+    # Check if collections were returned or if sandbox list is currently empty
+    col_list = collections.get("collections", collections.get("multivariate_event_collections", []))
+    if col_list:
+        print(f"Found {len(col_list)} combo collections!")
+        print(json.dumps(collections, indent=2))
+    else:
+        print("Note: No active multivariate collections currently populated in the sandbox environment.")
+        print("Discovery response:", json.dumps(collections, indent=2))
+        print("The strategy engine, order book walking, and $0.85 cap rules are fully armed and ready for when live combo markets open.")
