@@ -109,39 +109,87 @@ class ComboKStrategy:
         df = df.sort_values("price").reset_index(drop=True)
         return df[["price", "size"]]
 
+    def validate_combo_and_hedge(self, combo_name: str, single_name: str):
+        """
+        Enforces:
+          1. Pure directional combo pairs (both up or both down; no mixed breeds).
+          2. Inverse single-leg hedging rule (if combo is up, single must be down, and vice versa).
+        """
+        combo_upper = combo_name.upper()
+        single_upper = single_name.upper()
+
+        # Check combo direction structure
+        is_combo_up = ("UP" in combo_upper and "DOWN" not in combo_upper) or ("YES" in combo_upper)
+        is_combo_down = ("DOWN" in combo_upper) or ("NO" in combo_upper)
+
+        # Ensure no mixed-breed combos (e.g. BTC-up & ETH-down)
+        if "BTC-UP" in combo_upper and "ETH-DOWN" in combo_upper:
+            return False, "Rejected: Mixed-breed combo detected (BTC-up with ETH-down)."
+        if "BTC-DOWN" in combo_upper and "ETH-UP" in combo_upper:
+            return False, "Rejected: Mixed-breed combo detected (BTC-down with ETH-up)."
+
+        # Check single leg opposition rule
+        is_single_down = ("DOWN" in single_upper) or ("NO" in single_upper)
+        is_single_up = ("UP" in single_upper) or ("YES" in single_upper)
+
+        if is_combo_up and not is_single_down:
+            return False, "Rejected Hedging Rule: Combo is UP, but single leg is not DOWN."
+        if is_combo_down and not is_single_up:
+            return False, "Rejected Hedging Rule: Combo is DOWN, but single leg is not UP."
+
+        return True, "Passed structural validation rules."
+
     def plan_matched_pairs(self, combo_levels: pd.DataFrame, single_levels: pd.DataFrame,
-                            target_size: int, combined_cap: float = 0.85):
-        """Vectorized price-walking engine enforcing the combined $0.85 cap."""
+                            target_size: int, combo_max_price: float = 0.35, 
+                            single_max_price: float = 0.55, combined_cap: float = 0.85):
+        """
+        Advanced order book walker incorporating:
+          - Individual price ceilings (Combo <= $0.35, Single <= $0.55)
+          - Asymmetric depth & partial fills (ladder walking)
+          - Running average cumulative combined cost cap ($\le $0.85)
+        """
+        # 1. Filter levels by individual price limits
+        valid_combo = combo_levels[combo_levels["price"] <= combo_max_price].copy()
+        valid_single = single_levels[single_levels["price"] <= single_max_price].copy()
+
+        if valid_combo.empty or valid_single.empty:
+            return {
+                "filled_size": 0, "combo_avg_price": None, "single_avg_price": None,
+                "combined_avg_price": None, "combo_fills": pd.DataFrame(), "single_fills": pd.DataFrame()
+            }
+
+        # 2. Expand ladders to simulate depth and partial fills level-by-level
         def expand_ladder(levels, n):
             if levels.empty:
                 return pd.Series(dtype=float)
             reps = levels["size"].astype(int).clip(upper=n)
-            ladder = levels["price"].repeat(reps).reset_index(drop=True)
-            return ladder.iloc[:n]
+            return levels["price"].repeat(reps).reset_index(drop=True).iloc[:n]
 
-        combo_ladder = expand_ladder(combo_levels, target_size)
-        single_ladder = expand_ladder(single_levels, target_size)
+        combo_ladder = expand_ladder(valid_combo, target_size)
+        single_ladder = expand_ladder(valid_single, target_size)
 
         max_matchable = min(len(combo_ladder), len(single_ladder))
         if max_matchable == 0:
             return {
                 "filled_size": 0, "combo_avg_price": None, "single_avg_price": None,
-                "combined_avg_price": None, "combo_fills": pd.DataFrame(), "single_fills": pd.DataFrame(),
+                "combined_avg_price": None, "combo_fills": pd.DataFrame(), "single_fills": pd.DataFrame()
             }
 
         combo_ladder = combo_ladder.iloc[:max_matchable].reset_index(drop=True)
         single_ladder = single_ladder.iloc[:max_matchable].reset_index(drop=True)
 
+        # 3. Calculate running average combined cost
         pair_cost = combo_ladder + single_ladder
         cum_avg = pair_cost.cumsum() / (pair_cost.index + 1)
 
+        # 4. Enforce strict combined cap ($0.85 limit) with hard cutoff
         eligible = cum_avg[cum_avg <= combined_cap]
         filled_size = int(eligible.index.max()) + 1 if len(eligible) > 0 else 0
 
         if filled_size == 0:
             return {
                 "filled_size": 0, "combo_avg_price": None, "single_avg_price": None,
-                "combined_avg_price": None, "combo_fills": pd.DataFrame(), "single_fills": pd.DataFrame(),
+                "combined_avg_price": None, "combo_fills": pd.DataFrame(), "single_fills": pd.DataFrame()
             }
 
         combo_fills = combo_ladder.iloc[:filled_size]
@@ -156,39 +204,52 @@ class ComboKStrategy:
             "single_fills": single_fills,
         }
 
-    def dry_run(self, combo_ticker, single_ticker, target_size, combined_cap=0.85):
+    def dry_run(self, combo_ticker, single_ticker, target_size, 
+                combo_max_price=0.35, single_max_price=0.55, combined_cap=0.85):
+        
+        # Validate structural rules first
+        is_valid, msg = self.validate_combo_and_hedge(combo_ticker, single_ticker)
+        print("=" * 60)
+        print(f"STRATEGY VALIDATION: {msg}")
+        print("=" * 60)
+        if not is_valid:
+            return {"filled_size": 0, "reason": msg}
+
         combo_levels = self.get_orderbook_levels(combo_ticker, side="yes")
         single_levels = self.get_orderbook_levels(single_ticker, side="yes")
 
-        plan = self.plan_matched_pairs(combo_levels, single_levels, target_size, combined_cap)
+        plan = self.plan_matched_pairs(
+            combo_levels, single_levels, target_size, 
+            combo_max_price, single_max_price, combined_cap
+        )
 
-        print("=" * 60)
-        print(f"DRY RUN — target size {target_size}, combined cap ${combined_cap}")
-        print("=" * 60)
-        print(f"Combo book depth available: {combo_levels['size'].sum() if not combo_levels.empty else 0}")
-        print(f"Single book depth available: {single_levels['size'].sum() if not single_levels.empty else 0}")
-        print(f"\nFilled matched-pair size: {plan['filled_size']}")
+        print(f"DRY RUN — Target Size: {target_size} | Combo Max: ${combo_max_price} | Single Max: ${single_max_price} | Cap: ${combined_cap}")
+        print("-" * 60)
+        print(f"Combo book depth (within ceiling): {combo_levels[combo_levels['price'] <= combo_max_price]['size'].sum() if not combo_levels.empty else 0}")
+        print(f"Single book depth (within ceiling): {single_levels[single_levels['price'] <= single_max_price]['size'].sum() if not single_levels.empty else 0}")
+        print(f"\nSuccessfully Matched Partial Fill Size: {plan['filled_size']}")
+        
         if plan["filled_size"] > 0:
-            print(f"Combo avg price:    ${plan['combo_avg_price']}")
-            print(f"Single avg price:   ${plan['single_avg_price']}")
-            print(f"Combined avg price: ${plan['combined_avg_price']}  (cap ${combined_cap})")
+            print(f"Combo Avg Price:    ${plan['combo_avg_price']}")
+            print(f"Single Avg Price:   ${plan['single_avg_price']}")
+            print(f"Combined Avg Price: ${plan['combined_avg_price']}  (Strict Cap < ${combined_cap})")
         else:
-            print("No fillable size within cap — trade would be REJECTED, no orders placed.")
+            print("No fillable size within individual price limits and combined cap — trade REJECTED.")
 
         return plan
 
     def execute_matched_pairs(self, combo_ticker, single_ticker, plan, dry_run_only=True):
-        if plan["filled_size"] == 0:
-            print("Nothing to execute — plan had zero fillable size.")
+        if plan.get("filled_size", 0) == 0:
+            print("Nothing to execute — plan resulted in zero fillable contracts.")
             return None
 
         size = plan["filled_size"]
         combo_price = plan["combo_avg_price"]
         single_price = plan["single_avg_price"]
 
-        print(f"{'[DRY RUN] ' if dry_run_only else ''}Would place:")
-        print(f"  BUY {size}x {combo_ticker} @ ~${combo_price} (combo leg)")
-        print(f"  BUY {size}x {single_ticker} @ ~${single_price} (single leg)")
+        print(f"\n{'[DRY RUN SIMULATION] ' if dry_run_only else '[LIVE EXECUTION] '}Action Plan:")
+        print(f"  BUY {size}x {combo_ticker} @ ~${combo_price}")
+        print(f"  BUY {size}x {single_ticker} @ ~${single_price}")
 
         if dry_run_only:
             return {"status": "dry_run_only", "plan": plan}
@@ -199,7 +260,7 @@ class ComboKStrategy:
 
 
 if __name__ == "__main__":
-    print("Initializing Kalshi Demo Bot with Combo Strategy...")
+    print("Initializing Kalshi Demo Bot with Full Combo & Hedging Rules...")
     bot = KalshiDemoBot(HOST, API_KEY_ID, PRIVATE_KEY_PEM)
     strategy = ComboKStrategy(bot)
     
@@ -207,16 +268,13 @@ if __name__ == "__main__":
     balance_response = bot.get_balance()
     print(f"Account Balance: ${balance_response.get('balance_dollars', '0.00')}")
     
-    # 2. Discover Combo Collections with Fallback Protection
+    # 2. Run Discovery Diagnostic
     print("\nDiscovering multivariate combo collections...")
     collections = strategy.discover_combo_collections()
-    
-    # Check if collections were returned or if sandbox list is currently empty
     col_list = collections.get("collections", collections.get("multivariate_event_collections", []))
+    
     if col_list:
         print(f"Found {len(col_list)} combo collections!")
-        print(json.dumps(collections, indent=2))
     else:
-        print("Note: No active multivariate collections currently populated in the sandbox environment.")
-        print("Discovery response:", json.dumps(collections, indent=2))
-        print("The strategy engine, order book walking, and $0.85 cap rules are fully armed and ready for when live combo markets open.")
+        print("Note: No active multivariate collections populated in sandbox right now.")
+        print("Strategy rules, individual price caps ($\le$0.35 / $\le$0.55), ladder partial fills, and overall $<0.85$ limit are fully armed.")
